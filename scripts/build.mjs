@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { build } from 'esbuild'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { wrapClient } from './wrap-client.mjs'
@@ -11,6 +11,7 @@ const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 
 await rm(out, { recursive: true, force: true })
 await mkdir(out, { recursive: true })
+await cp(join(root, 'assets', 'avatars'), join(out, 'avatars'), { recursive: true })
 
 await build({
   entryPoints: [join(root, 'src/host.js')],
