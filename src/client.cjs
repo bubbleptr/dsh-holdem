@@ -20,6 +20,7 @@ function rpc(method, args) {
 const CSS = require('./client-css.cjs')
 const { fmt, formatWinnerLines } = require('./format.js')
 const { raisePresets } = require('./bets.js')
+const { paintIdenticon } = require('./identicon.js')
 
 const SUIT = { s: '♠', h: '♥', d: '♦', c: '♣' }
 const RANK = { 14: 'A', 13: 'K', 12: 'Q', 11: 'J', 10: '10', 9: '9', 8: '8', 7: '7', 6: '6', 5: '5', 4: '4', 3: '3', 2: '2' }
@@ -55,8 +56,38 @@ function seatIsTop(seat) {
   return seat === 2 || seat === 3 || seat === 4
 }
 
-function Timeline(props) {
+function Identicon(props) {
+  const seed = props.seed || ''
+  const ref = React.useRef(null)
+  React.useEffect(function () {
+    paintIdenticon(ref.current, seed)
+  }, [seed])
+  return h('canvas', {
+    ref: ref,
+    className: 'hk-identicon',
+    width: 32,
+    height: 32,
+    'aria-hidden': 'true',
+  })
+}
+
+function PlayerMark(props) {
+  const p = props.player || {}
+  const avatar = p.avatar || {}
+  if (avatar.src) {
+    return h('img', { className: 'hk-avatar-img', src: avatar.src, alt: '' })
+  }
+  return h(Identicon, { seed: avatar.seed || p.id || '' })
+}
+
+function playerLabel(p) {
+  if (!p) return ''
+  return p.id === 'hero' ? 'you' : (p.name || p.id)
+}
+
+function TimelineBody(props) {
   const items = props.items || []
+  const byId = props.byId || {}
   const ref = React.useRef(null)
   React.useEffect(function () {
     const el = ref.current
@@ -75,8 +106,13 @@ function Timeline(props) {
       nodes.push(h('div', { key: ev.id, className: 'hk-tl-street' }, ev.action || ev.street))
       continue
     }
+    const markPlayer = (ev.playerId && byId[ev.playerId]) || (ev.playerId
+      ? { id: ev.playerId, avatar: { kind: 'identicon', seed: ev.playerId } }
+      : null)
     nodes.push(h('div', { key: ev.id, className: 'hk-tl-row' },
-      h('div', { className: 'hk-tl-ico' }, ev.emoji || '•'),
+      h('div', { className: 'hk-tl-ico' },
+        markPlayer ? h(PlayerMark, { player: markPlayer }) : (ev.emoji || '•'),
+      ),
       h('div', { className: 'hk-tl-main' },
         h('div', { className: 'hk-tl-name' }, ev.name || '牌桌'),
         ev.action ? h('div', { className: 'hk-tl-act' }, ev.action) : null,
@@ -85,12 +121,81 @@ function Timeline(props) {
     ))
   }
 
+  return h('div', { className: 'hk-tl', ref: ref },
+    nodes.length ? nodes : h('div', { className: 'hk-tl-empty' }, '开始一手牌后，行动和闲话会出现在这里。'),
+  )
+}
+
+function AvatarRow(props) {
+  const p = props.player
+  const inputRef = React.useRef(null)
+  const override = !!(p.avatar && p.avatar.kind === 'override')
+  return h('div', { className: 'hk-av-row' },
+    h('div', { className: 'hk-avatar' }, h(PlayerMark, { player: p })),
+    h('div', { className: 'hk-av-name' }, playerLabel(p)),
+    h('input', {
+      ref: inputRef,
+      type: 'file',
+      accept: 'image/png,image/jpeg,image/webp',
+      className: 'hk-av-file',
+      onChange: function (e) {
+        const file = e.target.files && e.target.files[0]
+        e.target.value = ''
+        if (file) props.onSetAvatar(p.id, file)
+      },
+    }),
+    h('button', {
+      type: 'button',
+      className: 'hk-chipbtn',
+      disabled: props.busy,
+      onClick: function () { if (inputRef.current) inputRef.current.click() },
+    }, '更换'),
+    h('button', {
+      type: 'button',
+      className: 'hk-chipbtn',
+      disabled: props.busy || !override,
+      onClick: function () { props.onClearAvatar(p.id) },
+    }, '恢复默认'),
+  )
+}
+
+function Rail(props) {
+  const [tab, setTab] = React.useState('timeline')
+  const players = props.players || []
+  const byId = {}
+  for (let i = 0; i < players.length; i++) byId[players[i].id] = players[i]
   return h('aside', { className: 'hk-rail' },
-    h('div', { className: 'hk-rail-h' }, '牌局记录'),
-    h('div', { className: 'hk-rail-sub' }, '行动与桌边闲话'),
-    h('div', { className: 'hk-tl', ref: ref },
-      nodes.length ? nodes : h('div', { className: 'hk-tl-empty' }, '开始一手牌后，行动和闲话会出现在这里。'),
+    h('div', { className: 'hk-rail-tabs' },
+      h('button', {
+        type: 'button',
+        className: 'hk-rail-tab' + (tab === 'timeline' ? ' on' : ''),
+        onClick: function () { setTab('timeline') },
+      }, '时间线'),
+      h('button', {
+        type: 'button',
+        className: 'hk-rail-tab' + (tab === 'avatar' ? ' on' : ''),
+        onClick: function () { setTab('avatar') },
+      }, '头像'),
     ),
+    tab === 'timeline'
+      ? [
+          h('div', { key: 'sub', className: 'hk-rail-sub' }, '行动与桌边闲话'),
+          h(TimelineBody, { key: 'tl', items: props.items, byId: byId }),
+        ]
+      : [
+          h('div', { key: 'sub', className: 'hk-rail-sub' }, '上传图片覆盖默认头像'),
+          h('div', { key: 'list', className: 'hk-av-list' },
+            players.map(function (p) {
+              return h(AvatarRow, {
+                key: p.id,
+                player: p,
+                busy: props.busy,
+                onSetAvatar: props.onSetAvatar,
+                onClearAvatar: props.onClearAvatar,
+              })
+            }),
+          ),
+        ],
   )
 }
 
@@ -166,11 +271,10 @@ function seatView(p, thinkLabel, isWinner) {
   const thinking = !!(p.isToAct && p.kind === 'ai')
   const statusText = thinking ? (thinkLabel || '思考中') : (p.talk || '')
   const top = seatIsTop(p.seat)
-  const pal = p.brand && BRAND[p.brand]
   const pill = h('div', { className: 'hk-pill' },
-    h('div', { className: 'hk-avatar', style: pal ? { background: pal.bg, color: pal.fg } : undefined }, pal ? BrandMark(p.brand, 16, pal.fg) : (p.emoji || '•')),
+    h('div', { className: 'hk-avatar' }, h(PlayerMark, { player: p })),
     h('div', { className: 'hk-name' },
-      h('span', {}, p.id === 'hero' ? 'you' : (p.name || p.id)),
+      h('span', {}, playerLabel(p)),
       p.isDealer ? h('span', { className: 'hk-d', title: '庄家' }, '庄')
         : p.isBb ? h('span', { className: 'hk-d hk-bb', title: '大盲' }, '大')
         : p.isSb ? h('span', { className: 'hk-d hk-sb', title: '小盲' }, '小')
@@ -376,7 +480,13 @@ function Table(props) {
       ),
     ),
     ),
-    h(Timeline, { items: state.timeline || [] }),
+    h(Rail, {
+      items: state.timeline || [],
+      players: state.players || [],
+      busy: busy,
+      onSetAvatar: props.onSetAvatar,
+      onClearAvatar: props.onClearAvatar,
+    }),
     ),
   )
 }
@@ -429,6 +539,22 @@ function PokerView() {
         onNext: function () { call('next-hand', {}) },
         onReset: function () { call('reset', {}) },
         onAct: function (a) { call('act', a) },
+        onSetAvatar: function (id, file) {
+          if (!file) return
+          if (file.size > 2 * 1024 * 1024) {
+            setErr('图片超过 2MB')
+            return
+          }
+          const reader = new FileReader()
+          reader.onload = function () {
+            call('set-avatar', { id: id, image: reader.result })
+          }
+          reader.onerror = function () {
+            setErr('读取图片失败')
+          }
+          reader.readAsDataURL(file)
+        },
+        onClearAvatar: function (id) { call('clear-avatar', { id: id }) },
       }),
     )
 }

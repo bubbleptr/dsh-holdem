@@ -1,6 +1,6 @@
 {
   "name": "dsh-holdem",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Six-max No-Limit Hold'em for DeepSeek Harness: one human and five LLM agents.",
   "type": "module",
   "main": "lib/index.js",

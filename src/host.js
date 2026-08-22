@@ -1,5 +1,6 @@
 import { cardTxt, evalBest, makeDeck, shuffle, strength } from './cards.js'
 import { makePots } from './pots.js'
+import { avatarDataDir, avatarView, decodeAvatar, isPlayerId, loadBundled, loadOverrides, removeOverride, writeOverride } from './avatars.js'
 
 const START_STACK = 2000000
 const SB = 10000
@@ -98,6 +99,9 @@ export function createTable(ctx) {
   for (let i = 0; i < BOTS.length; i++) {
     players.push(createPlayer(Object.assign({ kind: 'ai' }, BOTS[i]), i + 1))
   }
+  const avatarDir = avatarDataDir()
+  const overrides = loadOverrides(avatarDir)
+  const bundled = loadBundled()
 
   let aiTimer = null
   let aiSeq = 0
@@ -116,6 +120,7 @@ export function createTable(ctx) {
       kind: entry.kind || 'action',
       name: entry.name || '',
       emoji: entry.emoji || '',
+      playerId: entry.playerId || '',
       action: entry.action || '',
       talk: entry.talk || '',
     }]).slice(-160)
@@ -246,6 +251,7 @@ export function createTable(ctx) {
           lastAction: p.lastAction,
           lastThought: '',
           talk: p.talk || '',
+          avatar: avatarView(p.id, overrides, bundled),
           hasCards: p.cards.length === 2,
           cards: show ? p.cards.slice() : [],
           handName: show && p.cards.length === 2 && (state.revealed || p.kind === 'human') && state.board.length >= 3
@@ -289,7 +295,7 @@ export function createTable(ctx) {
     state.toAct = null
     state.revealed = false
     log(winner.name + ' 收走底池 ' + amount)
-    record({ kind: 'result', name: winner.name, emoji: winner.emoji, action: '收走底池 ' + amount, street: state.street })
+    record({ kind: 'result', name: winner.name, emoji: winner.emoji, playerId: winner.id, action: '收走底池 ' + amount, street: state.street })
   }
 
   function showdown() {
@@ -324,6 +330,7 @@ export function createTable(ctx) {
         kind: 'result',
         name: winners.map(function (w) { return w.p.name }).join('、'),
         emoji: winners[0].p.emoji,
+        playerId: winners[0].p.id,
         action: winners[0].ev.name + ' · ' + potItem.amount,
         street: 'showdown',
       })
@@ -622,7 +629,7 @@ export function createTable(ctx) {
     applyAction(p, choice.type, choice.amount)
     if (choice.talk) p.talk = choice.talk
     state.actionLog = (state.actionLog || []).concat([state.street + ': ' + p.name + ' ' + p.lastAction]).slice(-16)
-    record({ kind: 'action', name: p.name, emoji: p.emoji, action: p.lastAction, talk: p.talk || '' })
+    record({ kind: 'action', name: p.name, emoji: p.emoji, playerId: p.id, action: p.lastAction, talk: p.talk || '' })
     afterAction()
     scheduleAi()
   }
@@ -703,9 +710,9 @@ export function createTable(ctx) {
     state.currentBet = players[bbSeat].bet
     state.minRaise = BB
     log('第 ' + state.handNo + ' 手 · ' + players[state.dealer].name + ' 坐庄')
-    record({ kind: 'street', action: '第 ' + state.handNo + ' 手', street: 'preflop', name: players[state.dealer].name, emoji: players[state.dealer].emoji })
-    record({ kind: 'action', name: players[sbSeat].name, emoji: players[sbSeat].emoji, action: players[sbSeat].lastAction, street: 'preflop' })
-    record({ kind: 'action', name: players[bbSeat].name, emoji: players[bbSeat].emoji, action: players[bbSeat].lastAction, street: 'preflop' })
+    record({ kind: 'street', action: '第 ' + state.handNo + ' 手', street: 'preflop', name: players[state.dealer].name, emoji: players[state.dealer].emoji, playerId: players[state.dealer].id })
+    record({ kind: 'action', name: players[sbSeat].name, emoji: players[sbSeat].emoji, playerId: players[sbSeat].id, action: players[sbSeat].lastAction, street: 'preflop' })
+    record({ kind: 'action', name: players[bbSeat].name, emoji: players[bbSeat].emoji, playerId: players[bbSeat].id, action: players[bbSeat].lastAction, street: 'preflop' })
     state.toAct = findNextActor(bbSeat)
     if (state.toAct == null) {
       maybeRunout()
@@ -760,17 +767,48 @@ export function createTable(ctx) {
     const p = players[0]
     applyAction(p, type, args && args.amount)
     state.actionLog = (state.actionLog || []).concat([state.street + ': you ' + p.lastAction]).slice(-16)
-    record({ kind: 'action', name: 'you', emoji: p.emoji, action: p.lastAction })
+    record({ kind: 'action', name: 'you', emoji: p.emoji, playerId: p.id, action: p.lastAction })
     afterAction()
     scheduleAi()
     return snapshot()
+  }
+
+  function setAvatar(args) {
+    const id = args && args.id
+    if (!isPlayerId(id)) throw new Error('unknown player')
+    const decoded = decodeAvatar(args)
+    if (!decoded) throw new Error('invalid image')
+    overrides[id] = writeOverride(avatarDir, id, decoded)
+    return snapshot()
+  }
+
+  function clearAvatar(args) {
+    const id = args && args.id
+    if (!isPlayerId(id)) throw new Error('unknown player')
+    removeOverride(avatarDir, id)
+    delete overrides[id]
+    return snapshot()
+  }
+
+  function avatarFile(id) {
+    if (overrides[id]) return overrides[id]
+    return bundled[id] || null
   }
 
   ctx.effect(function () {
     return function () { clearAi() }
   })
 
-  return { snapshot: snapshot, start: start, nextHand: nextHand, reset: reset, act: act }
+  return {
+    snapshot: snapshot,
+    start: start,
+    nextHand: nextHand,
+    reset: reset,
+    act: act,
+    setAvatar: setAvatar,
+    clearAvatar: clearAvatar,
+    avatarFile: avatarFile,
+  }
 }
 
 function readJson(req) {
@@ -799,6 +837,15 @@ function sendJson(res, status, body) {
   res.end(data)
 }
 
+function sendBytes(res, mime, bytes) {
+  res.writeHead(200, {
+    'content-type': mime || 'application/octet-stream',
+    'content-length': String(bytes.length),
+    'cache-control': 'no-store',
+  })
+  res.end(bytes)
+}
+
 function methodFromUrl(url) {
   const path = String(url || '').split('?')[0]
   const rest = path.replace(/^\/dsh-holdem\/?/, '')
@@ -817,6 +864,16 @@ export function apply(ctx) {
       handler: async function (req, res) {
         const method = methodFromUrl(req.url)
         try {
+          if (req.method === 'GET' && method.indexOf('avatar/') === 0) {
+            const id = decodeURIComponent(method.slice('avatar/'.length).split('/')[0])
+            const file = table.avatarFile(id)
+            if (!file) {
+              sendJson(res, 404, { error: 'no override' })
+              return
+            }
+            sendBytes(res, file.mime, file.bytes)
+            return
+          }
           if (req.method === 'GET' || method === 'get-state') {
             sendJson(res, 200, table.snapshot())
             return
@@ -830,9 +887,13 @@ export function apply(ctx) {
           else if (method === 'act') sendJson(res, 200, table.act(args || {}))
           else if (method === 'next-hand') sendJson(res, 200, table.nextHand())
           else if (method === 'reset') sendJson(res, 200, table.reset())
+          else if (method === 'set-avatar') sendJson(res, 200, table.setAvatar(args || {}))
+          else if (method === 'clear-avatar') sendJson(res, 200, table.clearAvatar(args || {}))
           else sendJson(res, 404, { error: 'unknown method' })
         } catch (err) {
-          sendJson(res, 500, { error: String((err && err.message) || err) })
+          const msg = String((err && err.message) || err)
+          const code = /unknown player|invalid image/.test(msg) ? 400 : 500
+          sendJson(res, code, { error: msg })
         }
       },
     })
