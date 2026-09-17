@@ -17,6 +17,91 @@ function rpc(method, args) {
   })
 }
 
+// One shared snapshot store for every mounted view (the conversation tab and
+// the floating mini window). Both subscribe to the same 280ms poll instead of
+// each running its own, so opening the mini window does not double the traffic.
+function createStore() {
+  let snap = { state: null, err: '', busy: false, now: Date.now() }
+  const listeners = new Map()
+  let timer = null
+  let interval = null
+
+  function emit(patch) {
+    snap = Object.assign({}, snap, patch)
+    listeners.forEach(function (fn) {
+      try { fn(snap) } catch (e) { /* one bad listener must not stop the poll */ }
+    })
+  }
+
+  function load() {
+    rpc('get-state').then(function (next) {
+      emit({ state: next, now: Date.now(), err: '' })
+    }).catch(function (e) {
+      emit({ err: String((e && e.message) || e) })
+    })
+  }
+
+  // The store polls as fast as its fastest subscriber wants: the open tab and
+  // the expanded mini window ask for 280ms, a collapsed mini window is happy
+  // with a slow heartbeat.
+  function retune() {
+    let want = null
+    listeners.forEach(function (ms) {
+      if (want === null || ms < want) want = ms
+    })
+    if (want === null) {
+      if (timer !== null) { clearInterval(timer); timer = null; interval = null }
+      return
+    }
+    if (timer !== null && interval === want) return
+    if (timer !== null) clearInterval(timer)
+    interval = want
+    timer = setInterval(load, want)
+  }
+
+  function subscribe(fn, intervalMs) {
+    listeners.set(fn, intervalMs || 280)
+    fn(snap)
+    if (timer === null) load()
+    retune()
+    return function () {
+      listeners.delete(fn)
+      retune()
+    }
+  }
+
+  function call(method, args) {
+    emit({ busy: true })
+    return rpc(method, args || {}).then(function (next) {
+      emit({ state: next, now: Date.now(), err: '' })
+      return next
+    }).catch(function (e) {
+      emit({ err: String((e && e.message) || e) })
+    }).then(function (v) {
+      emit({ busy: false })
+      return v
+    })
+  }
+
+  return {
+    subscribe: subscribe,
+    call: call,
+    fail: function (message) { emit({ err: message }) },
+  }
+}
+
+const store = createStore()
+
+const EMPTY_SNAP = { state: null, err: '', busy: false, now: 0 }
+
+function useStore(intervalMs) {
+  const [snap, setSnap] = React.useState(EMPTY_SNAP)
+  React.useEffect(function () {
+    return store.subscribe(setSnap, intervalMs)
+  }, [intervalMs])
+  return snap
+}
+
 const CSS = require('./client-css.cjs')
 const { fmt, formatWinnerLines } = require('./format.js')
 const { raisePresets } = require('./bets.js')
@@ -159,11 +244,34 @@ function AvatarRow(props) {
   )
 }
 
-function Rail(props) {
-  const [tab, setTab] = React.useState('timeline')
-  const players = props.players || []
+function playersById(players) {
   const byId = {}
   for (let i = 0; i < players.length; i++) byId[players[i].id] = players[i]
+  return byId
+}
+
+// The rail's two panes are split out so the floating mini window can reuse them
+// without the rail's own tab bar (it drives them from its segmented control).
+function TimelinePane(props) {
+  return h(TimelineBody, { items: props.items, byId: playersById(props.players || []) })
+}
+
+function AvatarPane(props) {
+  return h('div', { className: 'hk-av-list' },
+    (props.players || []).map(function (p) {
+      return h(AvatarRow, {
+        key: p.id,
+        player: p,
+        busy: props.busy,
+        onSetAvatar: props.onSetAvatar,
+        onClearAvatar: props.onClearAvatar,
+      })
+    }),
+  )
+}
+
+function Rail(props) {
+  const [tab, setTab] = React.useState('timeline')
   return h('aside', { className: 'hk-rail' },
     h('div', { className: 'hk-rail-tabs' },
       h('button', {
@@ -180,21 +288,17 @@ function Rail(props) {
     tab === 'timeline'
       ? [
           h('div', { key: 'sub', className: 'hk-rail-sub' }, '行动与桌边闲话'),
-          h(TimelineBody, { key: 'tl', items: props.items, byId: byId }),
+          h(TimelinePane, { key: 'tl', items: props.items, players: props.players }),
         ]
       : [
           h('div', { key: 'sub', className: 'hk-rail-sub' }, '上传图片覆盖默认头像'),
-          h('div', { key: 'list', className: 'hk-av-list' },
-            players.map(function (p) {
-              return h(AvatarRow, {
-                key: p.id,
-                player: p,
-                busy: props.busy,
-                onSetAvatar: props.onSetAvatar,
-                onClearAvatar: props.onClearAvatar,
-              })
-            }),
-          ),
+          h(AvatarPane, {
+            key: 'list',
+            players: props.players,
+            busy: props.busy,
+            onSetAvatar: props.onSetAvatar,
+            onClearAvatar: props.onClearAvatar,
+          }),
         ],
   )
 }
@@ -349,7 +453,11 @@ function useLockToScrollPort(root) {
 
 function Table(props) {
   const [rootEl, setRootEl] = React.useState(null)
-  useLockToScrollPort(rootEl)
+  const compact = !!props.compact
+  const rootClass = 'hk-root' + (compact ? ' hk-mini-inner' : '')
+  // The full tab stretches to the conversation scroll port; the mini window owns
+  // its own height instead, so it must skip that lock entirely.
+  useLockToScrollPort(compact ? null : rootEl)
   const state = props.state
   const busy = props.busy
   const now = props.now || 0
@@ -366,7 +474,7 @@ function Table(props) {
     setRaiseTo(minR)
   }, [minR, state && state.handNo, state && state.street])
 
-  if (!state) return h('div', { className: 'hk-root', ref: setRootEl }, h('div', { className: 'hk-wait', style: { padding: 24 } }, '连接中…'))
+  if (!state) return h('div', { className: rootClass, ref: setRootEl }, h('div', { className: 'hk-wait', style: { padding: 24 } }, '连接中…'))
 
   const acting = (state.players || []).find(function (p) { return p.isToAct })
   const winnerLines = formatWinnerLines(state.winners || [])
@@ -397,7 +505,7 @@ function Table(props) {
     thinkLabel = '思考中 · ' + left + '秒'
   }
 
-  return h('div', { className: 'hk-root', ref: setRootEl },
+  return h('div', { className: rootClass, ref: setRootEl },
     h('div', { className: 'hk-body' },
     h('div', { className: 'hk-main' },
     h('div', { className: 'hk-top' },
@@ -480,7 +588,9 @@ function Table(props) {
       ),
     ),
     ),
-    h(Rail, {
+    // The mini window drives the timeline and avatar panes from its own
+    // segmented control, so the rail must not be laid out inside it.
+    compact ? null : h(Rail, {
       items: state.timeline || [],
       players: state.players || [],
       busy: busy,
@@ -491,72 +601,255 @@ function Table(props) {
   )
 }
 
-function PokerView() {
-    const [state, setState] = React.useState(null)
-    const [err, setErr] = React.useState('')
-    const [busy, setBusy] = React.useState(false)
-    const [now, setNow] = React.useState(Date.now())
+function uploadAvatar(id, file) {
+  if (!file) return
+  if (file.size > 2 * 1024 * 1024) {
+    store.fail('图片超过 2MB')
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = function () {
+    store.call('set-avatar', { id: id, image: reader.result })
+  }
+  reader.onerror = function () {
+    store.fail('读取图片失败')
+  }
+  reader.readAsDataURL(file)
+}
 
-    React.useEffect(function () {
-      let alive = true
-      const load = function () {
-        rpc('get-state').then(function (next) {
-          if (alive) { setState(next); setNow(Date.now()); setErr('') }
-        }).catch(function (e) {
-          if (alive) setErr(String((e && e.message) || e))
-        })
-      }
-      load()
-      const timer = setInterval(load, 280)
-      return function () {
-        alive = false
-        clearInterval(timer)
-      }
-    }, [])
-
-    const call = function (method, args) {
-      setBusy(true)
-      return rpc(method, args || {}).then(function (next) {
-        setState(next)
-        setNow(Date.now())
-        setErr('')
-        return next
-      }).catch(function (e) {
-        setErr(String((e && e.message) || e))
-      }).then(function (v) {
-        setBusy(false)
-        return v
-      })
+// The tab and the mini window drive the same host session, so they share one
+// set of action handlers.
+function usePokerActions() {
+  return React.useMemo(function () {
+    return {
+      onStart: function () { store.call('start', {}) },
+      onNext: function () { store.call('next-hand', {}) },
+      onReset: function () { store.call('reset', {}) },
+      onAct: function (a) { store.call('act', a) },
+      onSetAvatar: uploadAvatar,
+      onClearAvatar: function (id) { store.call('clear-avatar', { id: id }) },
     }
+  }, [])
+}
 
-    return h('div', { style: { flex: 1, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
-      err ? h('div', { className: 'hk-err' }, err) : null,
-      h(Table, {
-        state: state,
-        busy: busy,
-        now: now,
-        onStart: function () { call('start', {}) },
-        onNext: function () { call('next-hand', {}) },
-        onReset: function () { call('reset', {}) },
-        onAct: function (a) { call('act', a) },
-        onSetAvatar: function (id, file) {
-          if (!file) return
-          if (file.size > 2 * 1024 * 1024) {
-            setErr('图片超过 2MB')
-            return
-          }
-          const reader = new FileReader()
-          reader.onload = function () {
-            call('set-avatar', { id: id, image: reader.result })
-          }
-          reader.onerror = function () {
-            setErr('读取图片失败')
-          }
-          reader.readAsDataURL(file)
-        },
-        onClearAvatar: function (id) { call('clear-avatar', { id: id }) },
-      }),
+function PokerView() {
+  const snap = useStore(280)
+  const actions = usePokerActions()
+  return h('div', { style: { flex: 1, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
+    snap.err ? h('div', { className: 'hk-err' }, snap.err) : null,
+    h(Table, Object.assign({
+      state: snap.state,
+      busy: snap.busy,
+      now: snap.now,
+    }, actions)),
+  )
+}
+
+const MINI_KEY = 'dsh-holdem.mini'
+const MINI_MARGIN = 12
+const MINI_W = 360
+const MINI_H = 520
+const MINI_PANES = [
+  { id: 'table', label: '牌桌' },
+  { id: 'timeline', label: '时间线' },
+  { id: 'avatar', label: '头像' },
+]
+
+function readMiniPrefs() {
+  try {
+    const raw = window.localStorage.getItem(MINI_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch (e) {
+    return {}
+  }
+}
+
+function writeMiniPrefs(prefs) {
+  try {
+    window.localStorage.setItem(MINI_KEY, JSON.stringify(prefs))
+  } catch (e) { /* private mode: position just will not persist */ }
+}
+
+function stopPointer(e) {
+  e.stopPropagation()
+}
+
+/**
+ * Floating poker window registered into `shell.overlay`. The overlay layer is
+ * `position:absolute; inset:0; pointer-events:none; z-index:20`, so this owns
+ * its own position and re-enables pointer events for itself.
+ */
+function MiniWindow() {
+  const initial = React.useRef(readMiniPrefs()).current
+  // Until the user actually drags it, the window stays anchored to the
+  // bottom-right corner. Clamping a persisted offset against a host that is
+  // momentarily narrow would otherwise pin the window somewhere arbitrary and
+  // never recover, because clamping is idempotent only for in-bounds values.
+  const movedRef = React.useRef(initial.moved === true)
+  const [off, setOff] = React.useState({
+    right: movedRef.current && typeof initial.right === 'number' ? initial.right : MINI_MARGIN,
+    bottom: movedRef.current && typeof initial.bottom === 'number' ? initial.bottom : MINI_MARGIN,
+  })
+  const [collapsed, setCollapsed] = React.useState(initial.collapsed === true)
+  const [pane, setPane] = React.useState(
+    MINI_PANES.some(function (p) { return p.id === initial.pane }) ? initial.pane : 'table',
+  )
+  const [dragging, setDragging] = React.useState(false)
+  const [resizeTick, setResizeTick] = React.useState(0)
+  const panelRef = React.useRef(null)
+  const dragRef = React.useRef(null)
+  const snap = useStore(collapsed ? 2000 : 280)
+  const actions = usePokerActions()
+
+  const state = snap.state
+  const playing = !!(state && state.status && state.status !== 'idle')
+  const meta = playing
+    ? ('第 ' + state.handNo + ' 手 · ' + (STREET[state.street] || state.street))
+    : '未开局'
+
+  React.useEffect(function () {
+    function onResize() { setResizeTick(function (n) { return n + 1 }) }
+    window.addEventListener('resize', onResize)
+    return function () { window.removeEventListener('resize', onResize) }
+  }, [])
+
+  // Keep a dragged window inside the overlay layer — after a collapse, a pane
+  // switch or a resize. Never mid-drag (that would fight the pointer), and never
+  // for the default bottom-right anchor, which needs no correction.
+  React.useEffect(function () {
+    if (dragging || !movedRef.current) return
+    const panel = panelRef.current
+    const host = panel && panel.offsetParent
+    if (!panel || !host) return
+    const maxRight = Math.max(MINI_MARGIN, host.clientWidth - panel.offsetWidth - MINI_MARGIN)
+    const maxBottom = Math.max(MINI_MARGIN, host.clientHeight - panel.offsetHeight - MINI_MARGIN)
+    setOff(function (cur) {
+      const right = clamp(cur.right, MINI_MARGIN, maxRight)
+      const bottom = clamp(cur.bottom, MINI_MARGIN, maxBottom)
+      return right === cur.right && bottom === cur.bottom ? cur : { right: right, bottom: bottom }
+    })
+  }, [dragging, collapsed, pane, resizeTick])
+
+  React.useEffect(function () {
+    if (dragging) return
+    writeMiniPrefs({ right: off.right, bottom: off.bottom, moved: movedRef.current, collapsed: collapsed, pane: pane })
+  }, [off.right, off.bottom, collapsed, pane, dragging])
+
+  function beginDrag(e) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    dragRef.current = { x: e.clientX, y: e.clientY, right: off.right, bottom: off.bottom, moved: false }
+    setDragging(true)
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch (err) { /* capture is best-effort */ }
+  }
+
+  function moveDrag(e) {
+    const start = dragRef.current
+    if (!start) return
+    const dx = e.clientX - start.x
+    const dy = e.clientY - start.y
+    if (!start.moved && Math.abs(dx) + Math.abs(dy) < 4) return
+    start.moved = true
+    const panel = panelRef.current
+    const host = panel && panel.offsetParent
+    const w = panel ? panel.offsetWidth : MINI_W
+    const hh = panel ? panel.offsetHeight : MINI_H
+    const maxRight = host ? Math.max(MINI_MARGIN, host.clientWidth - w - MINI_MARGIN) : Infinity
+    const maxBottom = host ? Math.max(MINI_MARGIN, host.clientHeight - hh - MINI_MARGIN) : Infinity
+    setOff({
+      right: clamp(start.right - dx, MINI_MARGIN, maxRight),
+      bottom: clamp(start.bottom - dy, MINI_MARGIN, maxBottom),
+    })
+  }
+
+  function endDrag(e) {
+    const start = dragRef.current
+    if (!start) return
+    dragRef.current = null
+    setDragging(false)
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch (err) { /* already released */ }
+    if (start.moved) movedRef.current = true
+    else if (collapsed) setCollapsed(false)
+  }
+
+  const dragProps = {
+    onPointerDown: beginDrag,
+    onPointerMove: moveDrag,
+    onPointerUp: endDrag,
+    onPointerCancel: endDrag,
+  }
+  const style = { right: off.right + 'px', bottom: off.bottom + 'px' }
+
+  if (collapsed) {
+    return h('div', Object.assign({
+      ref: panelRef,
+      className: 'hk-mini hk-mini-collapsed' + (dragging ? ' dragging' : ''),
+      style: style,
+      title: '拖动可移动 · 单击展开',
+    }, dragProps),
+      h('span', { className: 'hk-mini-ico' }, '🃏'),
+      h('span', { className: 'hk-mini-title' }, '德州扑克'),
+      h('span', { className: 'hk-mini-meta' },
+        playing ? ('底池 ' + fmt(state.pot || 0)) : '未开局',
+      ),
     )
+  }
+
+  let body
+  if (pane === 'table') {
+    body = h(Table, Object.assign({
+      compact: true,
+      state: state,
+      busy: snap.busy,
+      now: snap.now,
+    }, actions))
+  } else if (pane === 'timeline') {
+    body = h(TimelinePane, { items: (state && state.timeline) || [], players: (state && state.players) || [] })
+  } else {
+    body = h(AvatarPane, Object.assign({
+      players: (state && state.players) || [],
+      busy: snap.busy,
+    }, actions))
+  }
+
+  return h('div', {
+    ref: panelRef,
+    className: 'hk-mini' + (dragging ? ' dragging' : ''),
+    style: style,
+  },
+    h('div', Object.assign({
+      className: 'hk-mini-bar',
+      title: '拖动可移动 · 双击收起',
+      // Double-clicking the header collapses the window, matching the pill's
+      // single-click expand.
+      onDoubleClick: function () { setCollapsed(true) },
+    }, dragProps),
+      h('span', { className: 'hk-mini-ico' }, '🃏'),
+      h('span', { className: 'hk-mini-title' }, '德州扑克'),
+      h('span', { className: 'hk-mini-meta' }, meta),
+      h('button', {
+        type: 'button',
+        className: 'hk-mini-btn',
+        title: '收起为悬浮按钮',
+        onPointerDown: stopPointer,
+        onClick: function () { setCollapsed(true) },
+      }, '—'),
+    ),
+    h('div', { className: 'hk-mini-body' },
+      snap.err ? h('div', { className: 'hk-err' }, snap.err) : null,
+      body,
+    ),
+    h('div', { className: 'hk-mini-seg' },
+      MINI_PANES.map(function (p) {
+        return h('button', {
+          key: p.id,
+          type: 'button',
+          className: pane === p.id ? 'on' : '',
+          onClick: function () { setPane(p.id) },
+        }, p.label)
+      }),
+    ),
+  )
 }
 
 function apply(ctx) {
@@ -571,6 +864,14 @@ function apply(ctx) {
     return ctx.slots.register(
       { name: 'conversation.view', id: 'holdem', order: 20, label: '德州扑克' },
       PokerView,
+    )
+  })
+  // The floating window lives in the shell's root-scope overlay layer, so it
+  // survives tab switches and can be dragged over the conversation.
+  ctx.slots.inject('shell.overlay', function () {
+    return ctx.slots.register(
+      { name: 'shell.overlay', id: 'holdem-mini', order: 20 },
+      MiniWindow,
     )
   })
 }
