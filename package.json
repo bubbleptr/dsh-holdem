@@ -19,7 +19,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/dev.mjs",
-    "test": "node --test 'test/*.test.mjs'",
+    "test": "node --test test/*.test.mjs",
+    "check:contrast": "node scripts/check-contrast.mjs",
     "prepack": "node scripts/build.mjs"
   },
   "publishConfig": {
@@ -40,7 +41,8 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout"
       ],
       "platform": "web"
     }
