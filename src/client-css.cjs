@@ -130,51 +130,59 @@ module.exports = `
 .hk-mini .hk-title,.hk-mini .hk-meta{display:none}
 .hk-mini .hk-chipbtn{padding:4px 10px;font-size:11px}
 .hk-mini .hk-chipbtn.go{padding:4px 12px}
-.hk-mini .hk-stage{padding:26px 52px 14px}
-.hk-mini .hk-play{width:100%;max-width:100%}
-.hk-mini .hk-table{max-height:none;margin-bottom:38px}
-.hk-mini .hk-seat{width:120px;gap:4px}
-.hk-mini .hk-seat.s1,.hk-mini .hk-seat.s2{left:92%!important}
-.hk-mini .hk-seat.s4,.hk-mini .hk-seat.s5{left:8%!important}
-.hk-mini .hk-seat.s1,.hk-mini .hk-seat.s5{top:26%!important}
-.hk-mini .hk-seat.s2,.hk-mini .hk-seat.s4{top:74%!important}
-.hk-mini .hk-seat.s3{top:2%!important}
-.hk-mini .hk-seat.s0{top:98%!important}
-.hk-mini .hk-pill{min-width:0;gap:4px;padding:3px 7px 3px 3px}
-.hk-mini .hk-avatar{width:20px;height:20px}
-.hk-mini .hk-name{font-size:10px;max-width:52px}
-.hk-mini .hk-stack{font-size:9px}
-.hk-mini .hk-d{width:12px;height:12px;font-size:7px}
-.hk-mini .hk-status{font-size:9px;padding:2px 6px;max-width:104px}
-.hk-mini .hk-potbet{font-size:8px;padding:1px 6px}
-.hk-mini .hk-winbadge{font-size:9px;padding:1px 7px}
-.hk-mini .hk-cards{width:52px;height:40px}
-.hk-mini .hk-cards .hk-card{width:28px;height:40px;border-radius:6px}
-.hk-mini .hk-cards .hk-card.fan-r{left:20px}
-.hk-mini .hk-cards .hk-rank{font-size:9px;top:2px;left:3px}
-.hk-mini .hk-cards .hk-suit{font-size:12px}
-.hk-mini .hk-seat.s0 .hk-cards{width:62px;height:46px}
-.hk-mini .hk-seat.s0 .hk-cards .hk-card{width:34px;height:46px}
-.hk-mini .hk-seat.s0 .hk-cards .hk-card.fan-r{left:24px}
-.hk-mini .hk-seat.s0 .hk-rank{font-size:10px}
-.hk-mini .hk-seat.s0 .hk-suit{font-size:14px}
-.hk-mini .hk-center{gap:6px;top:50%}
-.hk-mini .hk-pot{font-size:10px;padding:3px 8px}
-.hk-mini .hk-board{gap:5px;min-height:46px}
-.hk-mini .hk-board .hk-card{width:32px;height:45px}
-.hk-mini .hk-board .hk-rank{top:3px;left:3px;font-size:11px}
-.hk-mini .hk-board .hk-suit{font-size:17px}
-.hk-mini .hk-banner{max-width:210px;font-size:10px;padding:5px 8px}
-.hk-mini .hk-banner.hk-winner-banner{max-width:min(240px,86vw);font-size:11px}
-.hk-mini .hk-winner-sub{font-size:9px}
-.hk-mini .hk-dock{gap:6px;padding:0 4px 2px}
-.hk-mini .hk-panel{gap:5px;padding:5px 6px;flex-wrap:wrap;justify-content:center}
+.hk-mini .hk-d{width:13px;height:13px;font-size:8px}
+/* The mini window does not render the oval stage at all: at ~340px wide its
+   absolutely positioned seats, bubbles and winner banner overlap. It uses a
+   vertical layout instead — board/pot header, one row per player, actions. */
+.hk-mini .hk-c{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;padding:6px 8px 8px}
+.hk-mini .hk-c-top{flex:none;display:flex;align-items:center;justify-content:flex-end;gap:6px}
+.hk-mini .hk-c-head{flex:none;display:flex;flex-direction:column;gap:6px;padding:7px 8px;border:1px solid var(--hk-line-soft);border-radius:12px;background:var(--hk-subtle)}
+.hk-mini .hk-c-row1{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.hk-mini .hk-c-board{flex:none;display:flex;gap:4px}
+.hk-mini .hk-c-slot{display:flex}
+.hk-mini .hk-c-board .hk-card{width:34px;height:48px;border-radius:7px}
+.hk-mini .hk-c-board .hk-rank{top:3px;left:3px;font-size:11px}
+.hk-mini .hk-c-board .hk-suit{font-size:16px}
+.hk-mini .hk-c-pot{flex:none;font-size:12px;font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
+.hk-mini .hk-c-row2{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:34px}
+.hk-mini .hk-c-hole{display:flex;align-items:center;gap:7px;min-width:0}
+.hk-mini .hk-c-hole .hk-cards{position:relative;left:auto;top:auto;transform:none;flex:none;display:block;width:44px;height:34px}
+.hk-mini .hk-c-hole .hk-cards .hk-card{top:0;width:24px;height:34px;border-radius:5px}
+.hk-mini .hk-c-hole .hk-cards .hk-card.fan-l{left:0;transform:rotate(-12deg)}
+.hk-mini .hk-c-hole .hk-cards .hk-card.fan-r{left:18px;transform:rotate(12deg)}
+.hk-mini .hk-c-hole .hk-rank{top:2px;left:3px;font-size:9px}
+.hk-mini .hk-c-hole .hk-suit{font-size:13px}
+.hk-mini .hk-c-handname{font-size:11px;font-weight:650;color:var(--hk-text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hk-mini .hk-c-hint{font-size:10px;color:var(--hk-text-dim);line-height:1.35}
+.hk-mini .hk-c-winner{display:flex;flex-direction:column;align-items:flex-end;gap:1px;text-align:right;max-width:198px;min-width:0}
+.hk-mini .hk-c-winner .hk-winner-h{max-width:198px;font-size:11px;font-weight:700;color:var(--hk-win-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hk-mini .hk-c-winner .hk-winner-sub{max-width:198px;font-size:9px;color:var(--hk-win-sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hk-mini .hk-c-players{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:4px;padding-right:2px}
+.hk-mini .hk-c-row{flex:none;display:flex;align-items:center;gap:7px;padding:4px 7px;border:1px solid var(--hk-line-soft);border-radius:10px;background:var(--hk-surface)}
+.hk-mini .hk-c-row.me{background:var(--hk-muted);border-color:var(--hk-line-btn)}
+.hk-mini .hk-c-row.toact{border-color:var(--hk-accent);box-shadow:0 0 0 2px var(--hk-ring)}
+.hk-mini .hk-c-row.folded{opacity:.45}
+.hk-mini .hk-c-row.winner{border-color:var(--hk-win-line);background:var(--hk-win-bg)}
+.hk-mini .hk-c-av{flex:none;width:22px;height:22px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--hk-avatar-bg)}
+.hk-mini .hk-c-av img,.hk-mini .hk-c-av canvas{width:100%;height:100%;object-fit:cover;display:block}
+.hk-mini .hk-c-av canvas{image-rendering:pixelated;image-rendering:crisp-edges}
+.hk-mini .hk-c-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.hk-mini .hk-c-name{display:flex;align-items:center;gap:4px;min-width:0;font-size:11px;font-weight:650;line-height:1.35}
+.hk-mini .hk-c-who{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hk-mini .hk-c-crown{flex:none;font-size:10px;line-height:1}
+.hk-mini .hk-c-allin{flex:none;font-size:9px;font-weight:700;color:var(--hk-bet-fg);background:var(--hk-bet-bg);border:1px solid var(--hk-bet-line);border-radius:999px;padding:0 5px}
+.hk-mini .hk-c-stack{flex:none;margin-left:auto;padding-left:6px;font-size:10px;font-weight:400;color:var(--hk-text-dim);font-variant-numeric:tabular-nums}
+.hk-mini .hk-c-status{font-size:10px;line-height:1.3;color:var(--hk-accent-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:13px}
+.hk-mini .hk-c-status.quiet{color:var(--hk-text-3)}
+.hk-mini .hk-c-bet{flex:none;font-size:9px;font-weight:650;color:var(--hk-bet-fg);background:var(--hk-bet-bg);border:1px solid var(--hk-bet-line);border-radius:999px;padding:1px 6px;font-variant-numeric:tabular-nums}
+.hk-mini .hk-dock{flex:none;gap:6px;padding:0;align-items:stretch}
+.hk-mini .hk-panel{gap:5px;padding:4px 6px;flex-wrap:nowrap;justify-content:space-between}
 .hk-mini .hk-pre{font-size:10px;padding:4px 6px}
-.hk-mini .hk-slider{width:72px}
-.hk-mini .hk-amt{font-size:10px;min-width:56px}
+.hk-mini .hk-slider{flex:1;min-width:56px;width:auto}
+.hk-mini .hk-amt{font-size:10px;min-width:0;flex:none}
 .hk-mini .hk-actions{gap:6px}
-.hk-mini .hk-btn{min-width:74px;padding:8px 8px;font-size:12px;border-radius:10px}
-.hk-mini .hk-wait{font-size:11px;padding:6px 0}
+.hk-mini .hk-btn{flex:1;min-width:0;padding:9px 8px;font-size:12px;border-radius:10px}
+.hk-mini .hk-wait{font-size:11px;padding:6px 0;text-align:center}
 .hk-mini .hk-rail-sub{padding:8px 10px;font-size:10px}
 .hk-mini .hk-av-list{padding:0 6px 12px}
 .hk-mini .hk-av-row{padding:6px 4px;gap:6px}

@@ -513,6 +513,132 @@ function Table(props) {
     thinkLabel = '思考中 · ' + left + '秒'
   }
 
+  const startBtn = h('button', { className: 'hk-chipbtn go', disabled: busy, onClick: onStart }, 'Start')
+  const resetBtn = h('button', { className: 'hk-chipbtn', onClick: onReset }, 'Reset')
+
+  // The raise panel and the action row are shared by the full table and the
+  // compact mini layout, so they are built once here.
+  const raisePanel = legal.raise && maxR > minR
+    ? h('div', { key: 'panel', className: 'hk-panel' },
+        presets.map(function (p) {
+          return h('button', {
+            key: p.label,
+            className: 'hk-pre' + (chosen === p.v ? ' on' : ''),
+            onClick: function () { setRaiseTo(p.v) },
+          }, p.label)
+        }),
+        h('input', {
+          className: 'hk-slider',
+          type: 'range',
+          min: minR,
+          max: Math.max(minR, maxR),
+          value: chosen,
+          onChange: function (e) { setRaiseTo(Number(e.target.value)) },
+        }),
+        h('div', { className: 'hk-amt' }, fmt(chosen) + ' 筹码'),
+      )
+    : null
+
+  const dock = idle ? null : h('div', { className: 'hk-dock' },
+    over
+      ? h('div', { className: 'hk-actions' },
+          h('button', { className: 'hk-btn hk-go', disabled: busy, onClick: onNext }, '下一手'),
+        )
+      : myTurn
+        ? [
+            raisePanel,
+            h('div', { key: 'act', className: 'hk-actions' },
+              h('button', { className: 'hk-btn', disabled: busy || !legal.fold, onClick: function () { onAct({ type: 'fold' }) } }, 'Fold'),
+              legal.check
+                ? h('button', { className: 'hk-btn', disabled: busy, onClick: function () { onAct({ type: 'check' }) } }, 'Check')
+                : h('button', { className: 'hk-btn', disabled: busy || !legal.call, onClick: function () { onAct({ type: 'call' }) } }, 'Call ' + fmt(legal.callAmount || 0)),
+              legal.raise
+                ? h('button', {
+                    className: 'hk-btn hk-raise',
+                    disabled: busy,
+                    onClick: function () { onAct({ type: 'raise', amount: chosen }) },
+                  }, (chosen >= maxR ? 'All-in ' : 'Bet ') + fmt(chosen))
+                : null,
+            ),
+          ]
+        : h('div', { className: 'hk-wait' }, acting ? ((acting.name || acting.id) + ' 正在思考…') : '发牌中…'),
+  )
+
+  // The mini window is too narrow for the oval table: six seats, speech
+  // bubbles and the winner banner are absolutely positioned for a ~1000px
+  // stage, so squeezing them into ~340px piles everything on top of each
+  // other. It gets its own vertical layout instead — board/pot on top, one
+  // row per player, actions pinned at the bottom.
+  if (compact) {
+    const hero = (state.players || []).find(function (p) { return p.seat === 0 })
+    function playerRow(p) {
+      const thinking = !!(p.isToAct && p.kind === 'ai')
+      const status = thinking
+        ? (thinkLabel || '思考中')
+        : (p.talk || p.lastAction || (p.folded ? '已弃牌' : ''))
+      const won = !!winnerSeats[p.seat]
+      return h('div', {
+        key: p.id,
+        className: 'hk-c-row'
+          + (p.seat === 0 ? ' me' : '')
+          + (p.isToAct ? ' toact' : '')
+          + (p.folded ? ' folded' : '')
+          + (won ? ' winner' : '')
+          + (p.allIn ? ' allin' : ''),
+      },
+        h('div', { className: 'hk-c-av' }, h(PlayerMark, { player: p })),
+        h('div', { className: 'hk-c-main' },
+          h('div', { className: 'hk-c-name' },
+            h('span', { className: 'hk-c-who' }, playerLabel(p)),
+            p.isDealer ? h('span', { className: 'hk-d', title: '庄家' }, '庄')
+              : p.isBb ? h('span', { className: 'hk-d hk-bb', title: '大盲' }, '大')
+              : p.isSb ? h('span', { className: 'hk-d hk-sb', title: '小盲' }, '小')
+              : null,
+            won ? h('span', { className: 'hk-c-crown', title: '本手赢家' }, '🏆') : null,
+            p.allIn ? h('span', { className: 'hk-c-allin' }, '全下') : null,
+            h('span', { className: 'hk-c-stack' }, fmt(p.stack)),
+          ),
+          h('div', { className: 'hk-c-status' + (thinking ? '' : ' quiet') }, status),
+        ),
+        p.committed > 0 ? h('div', { className: 'hk-c-bet' }, fmt(p.committed)) : null,
+      )
+    }
+
+    return h('div', { className: rootClass, ref: setRootEl },
+      h('div', { className: 'hk-c' },
+        h('div', { className: 'hk-c-top' }, idle ? startBtn : null, resetBtn),
+        h('div', { className: 'hk-c-head' },
+          h('div', { className: 'hk-c-row1' },
+            h('div', { className: 'hk-c-board' },
+              boardSlots.map(function (c, i) {
+                return h('div', { key: i, className: 'hk-c-slot' }, cardView(c || 'back', boardOpts))
+              }),
+            ),
+            h('div', { className: 'hk-c-pot' }, idle ? '未开局' : ('底池 ' + fmt(state.pot || state.lastPot || 0))),
+          ),
+          h('div', { className: 'hk-c-row2' },
+            hero && hero.hasCards
+              ? h('div', { className: 'hk-c-hole' },
+                  holePair(hero),
+                  h('span', { className: 'hk-c-handname' }, hero.folded ? '已弃牌' : (hero.handName || '')),
+                )
+              : h('div', { className: 'hk-c-hint' }, idle ? '五位玩家入座，每人只看得见自己的底牌' : '发牌中…'),
+            over && winnerLines.length
+              ? h('div', { className: 'hk-c-winner' },
+                  h('div', { className: 'hk-winner-h' }, '🏆 ' + winnerLines[0]),
+                  winnerLines.length > 1
+                    ? h('div', { className: 'hk-winner-sub' }, winnerLines.slice(1).join(' · '))
+                    : null,
+                )
+              : null,
+          ),
+        ),
+        h('div', { className: 'hk-c-players' }, (state.players || []).map(playerRow)),
+        dock,
+      ),
+    )
+  }
+
   return h('div', { className: rootClass, ref: setRootEl },
     h('div', { className: 'hk-body' },
     h('div', { className: 'hk-main' },
@@ -523,10 +649,8 @@ function Table(props) {
           ? '六人桌 · Altman / 达里奥 / 马斯克 / 梁文峰 / 黄仁勋'
           : ('第 ' + state.handNo + ' 手 · ' + (STREET[state.street] || state.street) + (state.agentModel ? ' · ' + state.agentModel : '')),
       ),
-      idle
-        ? h('button', { className: 'hk-chipbtn go', disabled: busy, onClick: onStart }, 'Start')
-        : null,
-      h('button', { className: 'hk-chipbtn', onClick: onReset }, 'Reset'),
+      idle ? startBtn : null,
+      resetBtn,
     ),
     h('div', { className: 'hk-stage' },
       h('div', { className: 'hk-play' },
@@ -550,49 +674,7 @@ function Table(props) {
         ),
         (state.players || []).map(function (p) { return seatView(p, thinkLabel, !!winnerSeats[p.seat]) }),
       ),
-      idle ? null : h('div', { className: 'hk-dock' },
-      over
-          ? h('div', { className: 'hk-actions' },
-              h('button', { className: 'hk-btn hk-go', disabled: busy, onClick: onNext }, '下一手'),
-            )
-          : myTurn
-            ? [
-                legal.raise && maxR > minR
-                  ? h('div', { key: 'panel', className: 'hk-panel' },
-                      presets.map(function (p) {
-                        return h('button', {
-                          key: p.label,
-                          className: 'hk-pre' + (chosen === p.v ? ' on' : ''),
-                          onClick: function () { setRaiseTo(p.v) },
-                        }, p.label)
-                      }),
-                      h('input', {
-                        className: 'hk-slider',
-                        type: 'range',
-                        min: minR,
-                        max: Math.max(minR, maxR),
-                        value: chosen,
-                        onChange: function (e) { setRaiseTo(Number(e.target.value)) },
-                      }),
-                      h('div', { className: 'hk-amt' }, fmt(chosen) + ' 筹码'),
-                    )
-                  : null,
-                h('div', { key: 'act', className: 'hk-actions' },
-                  h('button', { className: 'hk-btn', disabled: busy || !legal.fold, onClick: function () { onAct({ type: 'fold' }) } }, 'Fold'),
-                  legal.check
-                    ? h('button', { className: 'hk-btn', disabled: busy, onClick: function () { onAct({ type: 'check' }) } }, 'Check')
-                    : h('button', { className: 'hk-btn', disabled: busy || !legal.call, onClick: function () { onAct({ type: 'call' }) } }, 'Call ' + fmt(legal.callAmount || 0)),
-                  legal.raise
-                    ? h('button', {
-                        className: 'hk-btn hk-raise',
-                        disabled: busy,
-                        onClick: function () { onAct({ type: 'raise', amount: chosen }) },
-                      }, (chosen >= maxR ? 'All-in ' : 'Bet ') + fmt(chosen))
-                    : null,
-                ),
-              ]
-            : h('div', { className: 'hk-wait' }, acting ? ((acting.name || acting.id) + ' 正在思考…') : '发牌中…'),
-      ),
+      dock,
       ),
     ),
     ),
@@ -715,6 +797,16 @@ function MiniWindow() {
   const meta = playing
     ? ('第 ' + state.handNo + ' 手 · ' + (STREET[state.street] || state.street))
     : '未开局'
+  // Collapsed pill copy. Once a hand is paid out the pot reads 0, so the
+  // result is shown instead of "底池 0".
+  const paidOut = (state && state.winners ? state.winners : []).reduce(function (a, w) {
+    return a + (w.amount || 0)
+  }, 0)
+  const pillText = !playing
+    ? '未开局'
+    : (state.status === 'hand-over' && paidOut > 0
+        ? ('🏆 ' + (((state.winners || [])[0].names || []).join('、')) + ' ' + fmt(paidOut))
+        : ('底池 ' + fmt(state.pot || 0)))
 
   React.useEffect(function () {
     function onResize() { setResizeTick(function (n) { return n + 1 }) }
@@ -797,9 +889,7 @@ function MiniWindow() {
     }, dragProps),
       h('span', { className: 'hk-mini-ico' }, '🃏'),
       h('span', { className: 'hk-mini-title' }, '德州扑克'),
-      h('span', { className: 'hk-mini-meta' },
-        playing ? ('底池 ' + fmt(state.pot || 0)) : '未开局',
-      ),
+      h('span', { className: 'hk-mini-meta' }, pillText),
     )
   }
 
