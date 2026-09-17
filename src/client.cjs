@@ -28,8 +28,16 @@ function createStore() {
 
   function emit(patch) {
     snap = Object.assign({}, snap, patch)
-    listeners.forEach(function (fn) {
-      try { fn(snap) } catch (e) { /* one bad listener must not stop the poll */ }
+    // `listeners` is keyed by the subscriber function (its value is the
+    // preferred interval), so iterate the KEYS: Map#forEach would hand us the
+    // interval number here and every notification would silently die in the
+    // catch below. Snapshot the keys so a listener unsubscribing mid-emit is safe.
+    Array.from(listeners.keys()).forEach(function (fn) {
+      try { fn(snap) } catch (e) {
+        // One bad listener must not stop the poll, but swallowing this silently
+        // hides real wiring bugs (e.g. iterating a Map's values by mistake).
+        if (typeof console !== 'undefined' && console.warn) console.warn('[dsh-holdem] listener failed', e)
+      }
     })
   }
 
