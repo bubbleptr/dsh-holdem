@@ -39,6 +39,22 @@ pnpm build
 
 改 Host 后需要重启 `dsh --profile web`。改 Client 后重新 `pnpm build`、刷新页面。
 
+## 下注尺度
+
+`legalFor` 的 `maxRaiseTo` 是**智能体的全部筹码**，所以直接把合法区间丢给模型会出事：
+模型常在区间里挑一个"看起来挺大"的数，于是每次加注都静默变成全下（上游修过同一类问题的
+客户端版本，见 `f90bd7e`）。现在 host 侧统一按底池给尺度：
+
+- prompt 里给的是**底池倍数**区间 `minRaiseTo – currentBet + 3 × 底池`，并单独列出 `allin`
+  作为"整副筹码"的显式选项，不再是加注区间的上界。
+- 非 `allin` 的加注一律过 `clampRaise`（`src/bets.js`）：落在 `[minRaiseTo, 上限]` 内。
+  只有显式选 `allin` 才会推光；底池已经很大时上限自然超过筹码，那时"合法加注就是全下"仍然成立。
+- 启发式兜底 `decideAi` 的额度也走同一条钳制——它原先会算出超过自己筹码的加注额，在 LLM
+  报错的回退路径上绕过 `normalizeChoice`，等于意外推光。
+
+规则与边界都在 `test/bets.test.mjs`（纯函数）和 `test/ai-sizing.test.mjs`（stub 掉 llm 服务、
+离线跑完整 AI 决策链路）里钉住。
+
 ## 悬浮小窗
 
 除了中间栏的完整 Tab，插件还在会话区域浮着一个 360×520 的小窗（注册在 `shell.overlay`），

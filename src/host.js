@@ -1,4 +1,5 @@
 import { cardTxt, evalBest, makeDeck, shuffle, strength } from './cards.js'
+import { clampRaise, raiseCeiling } from './bets.js'
 import { makePots } from './pots.js'
 import { avatarDataDir, avatarView, decodeAvatar, isPlayerId, loadBundled, loadOverrides, removeOverride, writeOverride } from './avatars.js'
 
@@ -9,7 +10,7 @@ const BB = 20000
 const BOTS = [
   { id: 'altman', name: 'Altman', emoji: 'A', brand: 'openai', company: 'OpenAI', loose: 0.04, agg: 0.58, bluff: 0.08, tag: 'OpenAI', style: '你是 OpenAI 创始人 Sam Altman。紧凶、爱讲愿景，但牌桌上绝不露底。垃圾牌就弃，强牌价值下注，很少大额诈唬。' },
   { id: 'dario', name: '达里奥', emoji: 'D', brand: 'anthropic', company: 'Anthropic', loose: -0.1, agg: 0.22, bluff: 0.03, tag: 'Anthropic', style: '你是 Anthropic 创始人 Dario Amodei。极紧、安全优先。只有强成牌或大听牌才继续，几乎不诈唬。' },
-  { id: 'musk', name: '马斯克', emoji: 'X', brand: 'xai', company: 'xAI', loose: 0.3, agg: 0.88, bluff: 0.36, tag: 'xAI', style: '你是 xAI 创始人埃隆·马斯克。疯子打法，爱全下，闲话短促带刺，偶尔乱诈。' },
+  { id: 'musk', name: '马斯克', emoji: 'X', brand: 'xai', company: 'xAI', loose: 0.3, agg: 0.88, bluff: 0.36, tag: 'xAI', style: '你是 xAI 创始人埃隆·马斯克。疯子打法：尺度夸张、爱做大额施压、闲话短促带刺、偶尔乱诈；但只有牌力真的够强时才推光，不要每手都全下。' },
   { id: 'liang', name: '梁文峰', emoji: '梁', brand: 'deepseek', company: 'DeepSeek', loose: 0.16, agg: 0.72, bluff: 0.22, tag: 'DeepSeek', style: '你是 DeepSeek 创始人梁文峰。高效松凶，尺度多变，会突然加注，专吃软玩家。' },
   { id: 'jensen', name: '黄仁勋', emoji: '黄', brand: 'nvidia', company: 'NVIDIA', loose: 0.12, agg: 0.7, bluff: 0.12, tag: 'NVIDIA', style: '你是 NVIDIA 创始人黄仁勋。热情、持续施压、爱价值下注。闲话像发布会，但不提牌面。' },
 ]
@@ -20,8 +21,8 @@ const ACT_TOOL = {
   parameters: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ['fold', 'check', 'call', 'raise'] },
-      amount: { type: 'number', description: 'Raise-to total in tokens. Required for raise.' },
+      type: { type: 'string', enum: ['fold', 'check', 'call', 'raise', 'allin'], description: 'allin = 把全部筹码一次推上去，只在少数情况使用；普通加注请用 raise。' },
+      amount: { type: 'number', description: 'Raise-to total in tokens, required for type=raise. Must sit inside the raise range given in the prompt.' },
       talk: { type: 'string', description: '可选桌边闲话，必须是简体中文，最多16个字。禁止提到底牌、花色、点数、听牌、成牌或任何推理过程。' },
     },
     required: ['type'],
@@ -489,7 +490,7 @@ export function createTable(ctx) {
     }
   }
 
-  function decideAi(p) {
+  function decideAiRaw(p) {
     const toCall = Math.max(0, state.currentBet - p.bet)
     const hs = strength(p.cards, state.board) + p.loose
     const potNow = pot()
@@ -519,6 +520,30 @@ export function createTable(ctx) {
     return { type: 'fold' }
   }
 
+  // The heuristic sizes raises as currentBet + size, which can overshoot the
+  // stack; committed straight from the error path it bypasses normalizeChoice,
+  // so an LLM failure used to shove by accident. Same clamp as the model path.
+  function decideAi(p) {
+    const choice = decideAiRaw(p)
+    if (!choice || choice.type !== 'raise') return choice
+    const legal = legalFor(p)
+    if (!legal.raise) return { type: legal.check ? 'check' : 'call' }
+    return { type: 'raise', amount: clampRaise(choice.amount, raiseOpts(legal)) }
+  }
+
+  // Sizing context shared by the action normaliser, the prompt and the
+  // heuristic fallback. maxRaiseTo is the bot's entire stack, so the legal
+  // range must never be presented — or used — as "how much may I bet".
+  function raiseOpts(legal) {
+    return {
+      pot: pot(),
+      currentBet: state.currentBet,
+      bb: BB,
+      minR: legal.minRaiseTo,
+      maxR: legal.maxRaiseTo,
+    }
+  }
+
   function normalizeChoice(raw, legal, fallback) {
     const type = raw && typeof raw.type === 'string' ? raw.type.toLowerCase() : ''
     const talk = sanitizeTalk(raw && raw.talk)
@@ -526,12 +551,9 @@ export function createTable(ctx) {
     if (type === 'fold' && legal.fold) return { type: legal.toCall > 0 ? 'fold' : 'check', talk: talk }
     if (type === 'call' && legal.call) return { type: 'call', talk: talk }
     if (type === 'call' && legal.check) return { type: 'check', talk: talk }
-    if ((type === 'raise' || type === 'bet' || type === 'allin') && legal.raise) {
-      let amount = typeof raw.amount === 'number' ? Math.floor(raw.amount) : legal.minRaiseTo
-      if (!(amount > 0)) amount = legal.minRaiseTo
-      if (amount < legal.minRaiseTo) amount = legal.minRaiseTo
-      if (amount > legal.maxRaiseTo) amount = legal.maxRaiseTo
-      return { type: 'raise', amount: amount, talk: talk }
+    if (type === 'allin' && legal.raise) return { type: 'raise', amount: legal.maxRaiseTo, talk: talk }
+    if ((type === 'raise' || type === 'bet') && legal.raise) {
+      return { type: 'raise', amount: clampRaise(raw.amount, raiseOpts(legal)), talk: talk }
     }
     return fallback
   }
@@ -541,13 +563,26 @@ export function createTable(ctx) {
     if (legal.fold && legal.toCall > 0) parts.push('fold')
     if (legal.check) parts.push('check')
     if (legal.call) parts.push('call ' + legal.callAmount + ' more tokens')
-    if (legal.raise) parts.push('raise to ' + legal.minRaiseTo + '–' + legal.maxRaiseTo + ' tokens (raise-to total, not increment)')
+    if (legal.raise) {
+      const opts = raiseOpts(legal)
+      const top = raiseCeiling(opts)
+      const potNow = Math.max(1, opts.pot)
+      parts.push('raise: amount = the raise-to total, from ' + legal.minRaiseTo + ' to ' + top +
+        ' (about ' + (Math.round(legal.minRaiseTo / potNow * 10) / 10) + '–' + (Math.round(top / potNow * 10) / 10) +
+        '× the ' + potNow + ' token pot)')
+      if (legal.maxRaiseTo > top) {
+        parts.push('allin: ' + legal.maxRaiseTo + ' (your entire stack) — a separate, deliberate choice, never the top of the raise range')
+      }
+    }
     return parts.join('; ')
   }
 
   function buildPrompt(p, legal) {
     const others = players.map(function (o) {
-      return '- seat ' + o.seat + ' ' + o.name + (o.seat === p.seat ? ' (you)' : '') +
+      // The human's display name is literally "you", so naming them and marking
+      // the bot with "(you)" in the same list reads as two selves to the model.
+      const who = o.seat === p.seat ? 'YOU' : (o.kind === 'human' ? 'the human' : o.name)
+      return '- seat ' + o.seat + ' ' + who +
         ': stack ' + o.stack + ', bet ' + o.bet +
         (o.folded ? ', folded' : '') +
         (o.allIn ? ', all-in' : '') +
@@ -556,13 +591,14 @@ export function createTable(ctx) {
     const history = (state.actionLog || []).length ? (state.actionLog || []).join('\n') : '(no actions yet this hand)'
     return [
       'Hand #' + state.handNo + ' · ' + state.street + ' · pot ' + pot() + ' tokens · current bet ' + state.currentBet,
-      'Blinds ' + SB + '/' + BB + '.',
+      'Blinds ' + SB + '/' + BB + '. Your stack ' + p.stack + ' tokens (about ' +
+        Math.round(p.stack / BB) + ' big blinds); you have ' + p.bet + ' tokens in front of you this street.',
       'Your hole cards: ' + p.cards.map(cardTxt).join(' '),
       'Board: ' + (state.board.length ? state.board.map(cardTxt).join(' ') : '(none)'),
       'Players:\n' + others,
       'Action so far:\n' + history,
       'Legal actions: ' + describeLegal(legal),
-      '选择一个合法动作。talk 必须是简体中文闲话，最多十六个字。禁止在 talk 里提到底牌、花色、点数或任何推理。',
+      '选择一个合法动作。金额要和底池相称：除非你真的打算把全部筹码压上（那才选 allin），否则不要把 raise 的 amount 写成区间上界。talk 必须是简体中文闲话，最多十六个字。禁止在 talk 里提到底牌、花色、点数或任何推理。',
     ].join('\n\n')
   }
 
