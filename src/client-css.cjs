@@ -45,6 +45,7 @@ module.exports = `
 .hk-pot{font-size:12px;color:var(--hk-text-3);font-weight:600;background:var(--hk-surface);border:1px solid var(--hk-line);border-radius:999px;padding:5px 10px}
 .hk-board{display:flex;gap:10px;min-height:100px;align-items:center;justify-content:center}
 .hk-banner{max-width:360px;text-align:center;font-size:12px;line-height:1.45;color:var(--hk-text-3);background:var(--hk-surface);border:1px solid var(--hk-line-soft);border-radius:12px;padding:8px 12px}
+.hk-banner.hk-over-banner{color:var(--hk-win-fg);background:var(--hk-win-bg);border-color:var(--hk-win-line);font-weight:700;max-width:min(420px,86vw)}
 .hk-seat{position:absolute;width:168px;display:flex;flex-direction:column;align-items:center;gap:6px;z-index:2;overflow:visible}
 .hk-seat.folded{opacity:.4}
 .hk-seat.s0 .hk-status,.hk-seat.top .hk-status{position:absolute;left:50%;top:calc(100% + 8px);bottom:auto;transform:translateX(-50%)}
@@ -87,6 +88,8 @@ module.exports = `
 .hk-d{flex:none;width:16px;height:16px;border-radius:50%;background:var(--hk-primary-bg);color:var(--hk-primary-fg);font-size:9px;font-weight:750;display:flex;align-items:center;justify-content:center;letter-spacing:0}
 .hk-d.hk-bb{background:var(--hk-text-3)}
 .hk-d.hk-sb{background:var(--hk-surface);color:var(--hk-text-2);border:1px solid var(--hk-line-chip)}
+.hk-d.hk-rebuy{width:auto;padding:0 4px;border-radius:999px;background:var(--hk-muted);color:var(--hk-text-dim);font-size:8px;font-weight:650}
+.hk-d.hk-out{width:auto;padding:0 4px;border-radius:999px;background:var(--hk-bet-bg);color:var(--hk-bet-fg);border:1px solid var(--hk-bet-line);font-size:8px;font-weight:700}
 .hk-stack{flex:none;margin-left:auto;white-space:nowrap;font-size:11px;color:var(--hk-text-dim)}
 .hk-status{max-width:168px;font-size:11px;font-weight:600;color:var(--hk-accent-fg);background:var(--hk-accent-bg);border-radius:999px;padding:3px 8px;line-height:1.25;text-align:center}
 .hk-status.talk{color:var(--hk-text-2);background:var(--hk-muted)}
@@ -162,6 +165,7 @@ module.exports = `
 .hk-mini .hk-c-row.me{background:var(--hk-muted);border-color:var(--hk-line-btn)}
 .hk-mini .hk-c-row.toact{border-color:var(--hk-accent);box-shadow:0 0 0 2px var(--hk-ring)}
 .hk-mini .hk-c-row.folded{opacity:.45}
+.hk-mini .hk-c-row.out{opacity:.4;background:var(--hk-muted)}
 .hk-mini .hk-c-row.winner{border-color:var(--hk-win-line);background:var(--hk-win-bg)}
 .hk-mini .hk-c-av{flex:none;width:22px;height:22px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--hk-avatar-bg)}
 .hk-mini .hk-c-av img,.hk-mini .hk-c-av canvas{width:100%;height:100%;object-fit:cover;display:block}
@@ -172,6 +176,11 @@ module.exports = `
 .hk-mini .hk-c-crown{flex:none;font-size:10px;line-height:1}
 .hk-mini .hk-c-allin{flex:none;font-size:9px;font-weight:700;color:var(--hk-bet-fg);background:var(--hk-bet-bg);border:1px solid var(--hk-bet-line);border-radius:999px;padding:0 5px}
 .hk-mini .hk-c-stack{flex:none;margin-left:auto;padding-left:6px;font-size:10px;font-weight:400;color:var(--hk-text-dim);font-variant-numeric:tabular-nums}
+.hk-mini .hk-d.hk-rebuy{width:auto;padding:0 4px;border-radius:999px;background:var(--hk-muted);color:var(--hk-text-dim);font-size:8px;font-weight:650}
+.hk-mini .hk-d.hk-out{width:auto;padding:0 4px;border-radius:999px;background:var(--hk-bet-bg);color:var(--hk-bet-fg);border:1px solid var(--hk-bet-line);font-size:8px;font-weight:700}
+.hk-mini .hk-c-over{margin:0 0 6px;padding:8px 10px;border:1px solid var(--hk-win-line);border-radius:10px;background:var(--hk-win-bg);text-align:center}
+.hk-mini .hk-c-over-h{font-size:12px;font-weight:750;color:var(--hk-win-fg)}
+.hk-mini .hk-c-over-sub{margin-top:2px;font-size:10px;line-height:1.4;color:var(--hk-win-sub)}
 .hk-mini .hk-c-status{font-size:10px;line-height:1.3;color:var(--hk-accent-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:13px}
 .hk-mini .hk-c-status.quiet{color:var(--hk-text-3)}
 .hk-mini .hk-c-bet{flex:none;font-size:9px;font-weight:650;color:var(--hk-bet-fg);background:var(--hk-bet-bg);border:1px solid var(--hk-bet-line);border-radius:999px;padding:1px 6px;font-variant-numeric:tabular-nums}

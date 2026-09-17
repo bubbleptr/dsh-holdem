@@ -117,7 +117,7 @@ const { paintIdenticon } = require('./identicon.js')
 
 const SUIT = { s: '♠', h: '♥', d: '♦', c: '♣' }
 const RANK = { 14: 'A', 13: 'K', 12: 'Q', 11: 'J', 10: '10', 9: '9', 8: '8', 7: '7', 6: '6', 5: '5', 4: '4', 3: '3', 2: '2' }
-const STREET = { idle: '大厅', preflop: '翻前', flop: '翻牌', turn: '转牌', river: '河牌', showdown: '摊牌', 'hand-over': '本手结束' }
+const STREET = { idle: '大厅', preflop: '翻前', flop: '翻牌', turn: '转牌', river: '河牌', showdown: '摊牌', 'hand-over': '本手结束', 'game-over': '本局结束' }
 
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n))
@@ -379,7 +379,19 @@ function holePair(p) {
   )
 }
 
-function seatView(p, thinkLabel, isWinner) {
+// Blind/button badges plus the buy-in budget. Every player starts with 2M and
+// may rebuy MAX_REBUYS times; after that they sit out, so this badge is the
+// only place the remaining bullets are visible.
+function chipBadges(p, maxRebuys) {
+  return [
+    p.out ? h('span', { key: 'out', className: 'hk-d hk-out', title: '买入用尽，已出局' }, '出局') : null,
+    p.rebuys > 0
+      ? h('span', { key: 'rebuy', className: 'hk-d hk-rebuy', title: '已重新买入 ' + p.rebuys + ' 次' }, '买入 ' + p.rebuys + '/' + (maxRebuys || 3))
+      : null,
+  ]
+}
+
+function seatView(p, thinkLabel, isWinner, maxRebuys) {
   const thinking = !!(p.isToAct && p.kind === 'ai')
   const statusText = thinking ? (thinkLabel || '思考中') : (p.talk || '')
   const top = seatIsTop(p.seat)
@@ -392,7 +404,10 @@ function seatView(p, thinkLabel, isWinner) {
         : p.isSb ? h('span', { className: 'hk-d hk-sb', title: '小盲' }, '小')
         : Verified(),
     ),
-    h('div', { className: 'hk-stack' }, fmt(p.stack) + ' 筹码'),
+    h('div', { className: 'hk-stack' },
+      fmt(p.stack) + ' 筹码',
+      chipBadges(p, maxRebuys),
+    ),
   )
   const below = isWinner
     ? h('div', { className: 'hk-winbadge' }, '🏆 Winner')
@@ -493,6 +508,7 @@ function Table(props) {
   }
   const idle = state.status === 'idle'
   const over = state.status === 'hand-over'
+  const ended = state.status === 'game-over'
   const myTurn = state.status === 'playing' && state.toAct === 0
   const board = state.board || []
   const boardSlots = [0, 1, 2, 3, 4].map(function (i) { return board[i] || null })
@@ -540,7 +556,9 @@ function Table(props) {
     : null
 
   const dock = idle ? null : h('div', { className: 'hk-dock' },
-    over
+    ended
+      ? h('div', { className: 'hk-wait' }, '本局结束 · 点 Reset 再开一桌')
+      : over
       ? h('div', { className: 'hk-actions' },
           h('button', { className: 'hk-btn hk-go', disabled: busy, onClick: onNext }, '下一手'),
         )
@@ -575,7 +593,7 @@ function Table(props) {
       const thinking = !!(p.isToAct && p.kind === 'ai')
       const status = thinking
         ? (thinkLabel || '思考中')
-        : (p.talk || p.lastAction || (p.folded ? '已弃牌' : ''))
+        : (p.talk || p.lastAction || (p.out ? '买入用尽 · 出局' : (p.folded ? '已弃牌' : '')))
       const won = !!winnerSeats[p.seat]
       return h('div', {
         key: p.id,
@@ -583,6 +601,7 @@ function Table(props) {
           + (p.seat === 0 ? ' me' : '')
           + (p.isToAct ? ' toact' : '')
           + (p.folded ? ' folded' : '')
+          + (p.out ? ' out' : '')
           + (won ? ' winner' : '')
           + (p.allIn ? ' allin' : ''),
       },
@@ -596,6 +615,7 @@ function Table(props) {
               : null,
             won ? h('span', { className: 'hk-c-crown', title: '本手赢家' }, '🏆') : null,
             p.allIn ? h('span', { className: 'hk-c-allin' }, '全下') : null,
+            chipBadges(p, state.maxRebuys),
             h('span', { className: 'hk-c-stack' }, fmt(p.stack)),
           ),
           h('div', { className: 'hk-c-status' + (thinking ? '' : ' quiet') }, status),
@@ -607,6 +627,12 @@ function Table(props) {
     return h('div', { className: rootClass, ref: setRootEl },
       h('div', { className: 'hk-c' },
         h('div', { className: 'hk-c-top' }, idle ? startBtn : null, resetBtn),
+        ended
+          ? h('div', { className: 'hk-c-over' },
+              h('div', { className: 'hk-c-over-h' }, '本局结束'),
+              h('div', { className: 'hk-c-over-sub' }, '你已用完 ' + (state.maxRebuys || 3) + ' 次买入 · 点 Reset 再开一桌'),
+            )
+          : null,
         h('div', { className: 'hk-c-head' },
           h('div', { className: 'hk-c-row1' },
             h('div', { className: 'hk-c-board' },
@@ -634,7 +660,7 @@ function Table(props) {
           ),
         ),
         h('div', { className: 'hk-c-players' }, (state.players || []).map(playerRow)),
-        dock,
+        ended ? null : dock,
       ),
     )
   }
@@ -661,6 +687,11 @@ function Table(props) {
             boardSlots.map(function (c, i) { return h('div', { key: i }, cardView(c || 'back', boardOpts)) }),
           ),
           idle ? h('div', { className: 'hk-banner' }, '五位玩家入座。每人只能看见自己的底牌。') : null,
+          ended
+            ? h('div', { className: 'hk-banner hk-over-banner' },
+                '本局结束 · 你的 ' + (state.maxRebuys || 3) + ' 次买入已经用完，点 Reset 再开一桌。',
+              )
+            : null,
           over && winnerLines.length
             ? h('div', { className: 'hk-banner hk-winner-banner' },
                 winnerLines.map(function (line, i) {
@@ -672,7 +703,7 @@ function Table(props) {
               )
             : null,
         ),
-        (state.players || []).map(function (p) { return seatView(p, thinkLabel, !!winnerSeats[p.seat]) }),
+        (state.players || []).map(function (p) { return seatView(p, thinkLabel, !!winnerSeats[p.seat], state.maxRebuys) }),
       ),
       dock,
       ),

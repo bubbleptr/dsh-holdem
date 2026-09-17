@@ -12,7 +12,7 @@ dsh-holdem 是 DeepSeek Harness (dsh) 的插件：六人无限注德州扑克，
 pnpm install
 pnpm build        # 一次性构建（scripts/build.mjs），产出 lib/
 pnpm dev          # watch 模式（scripts/dev.mjs），只监听 client 侧源码重建 lib/client.js
-pnpm test         # node:test 单测（test/*.test.mjs），覆盖 cards.js 与 pots.js 纯逻辑
+pnpm test         # node:test 单测（test/*.test.mjs）：纯逻辑 + 离线引擎（test/harness.mjs stub 掉 llm 服务）
 ```
 
 发包时 `prepack` 会自动执行 build。无 lint 配置。
@@ -27,7 +27,7 @@ pnpm test         # node:test 单测（test/*.test.mjs），覆盖 cards.js 与 
 
 插件分为两个半区，由 `scripts/build.mjs` 用 esbuild 分别打包：
 
-纯逻辑单独成模块并有单测：`src/cards.js`（牌力评估，`eval5`/`evalBest` 等）、`src/pots.js`（边池分层 `makePots`）；`src/client-css.cjs` 是 client 的整段 CSS 字符串。牌局引擎（`createTable` 闭包）刻意保持在 `src/host.js` 内未拆——共享可变状态，拆分需先补更多特征测试。
+纯逻辑单独成模块并有单测：`src/cards.js`（牌力评估，`eval5`/`evalBest` 等）、`src/pots.js`（边池分层 `makePots`）、`src/bets.js`（下注尺度 `raiseCeiling`/`clampRaise`）、`src/table-rules.js`（买入/出局 `rebuyDecision`、盲注座位 `blindSeats`，含单挑）；`src/client-css.cjs` 是 client 的整段 CSS 字符串。牌局引擎（`createTable` 闭包）刻意保持在 `src/host.js` 内未拆——共享可变状态，拆分需先补更多特征测试；引擎级测试用 `test/harness.mjs` stub 掉 `llm` 服务离线驱动（`test/ai-sizing.test.mjs`、`test/rebuys.test.mjs`），需要确定性时用 `seedRandom(seed)` 替换 `Math.random`。
 
 **Host（`src/host.js` → `lib/index.js`，Node/ESM）**
 - cordis 风格插件：`export const name / inject = ['timer', 'webServer']` 和 `apply(ctx)`。build 脚本会校验这组导出，缺了会构建失败。

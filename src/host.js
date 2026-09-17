@@ -1,5 +1,6 @@
 import { cardTxt, evalBest, makeDeck, shuffle, strength } from './cards.js'
 import { clampRaise, raiseCeiling } from './bets.js'
+import { MAX_REBUYS, blindSeats, rebuyDecision } from './table-rules.js'
 import { makePots } from './pots.js'
 import { avatarDataDir, avatarView, decodeAvatar, isPlayerId, loadBundled, loadOverrides, removeOverride, writeOverride } from './avatars.js'
 
@@ -62,6 +63,8 @@ function createPlayer(spec, seat) {
     bluff: spec.bluff || 0.1,
     seat: seat,
     stack: START_STACK,
+    rebuys: 0,
+    out: false,
     bet: 0,
     committed: 0,
     folded: false,
@@ -86,6 +89,9 @@ export function createTable(ctx) {
     currentBet: 0,
     minRaise: BB,
     toAct: null,
+    sbSeat: null,
+    bbSeat: null,
+    gameOver: false,
     winners: [],
     revealed: false,
     lastPot: 0,
@@ -221,6 +227,8 @@ export function createTable(ctx) {
       minRaise: state.minRaise,
       winners: state.winners,
       revealed: state.revealed,
+      gameOver: !!state.gameOver,
+      maxRebuys: MAX_REBUYS,
       thinkEndsAt: state.thinkEndsAt || 0,
       agentModel: state.agentModel || '',
       log: state.log.slice(),
@@ -241,13 +249,15 @@ export function createTable(ctx) {
           tag: p.tag,
           seat: p.seat,
           stack: p.stack,
+          rebuys: p.rebuys || 0,
+          out: !!p.out,
           bet: p.bet,
           committed: p.committed,
           folded: p.folded,
           allIn: p.allIn,
           isDealer: p.seat === state.dealer,
-          isSb: p.seat === cw(state.dealer, 1),
-          isBb: p.seat === cw(state.dealer, 2),
+          isSb: p.seat === state.sbSeat,
+          isBb: p.seat === state.bbSeat,
           isToAct: state.toAct === p.seat && state.status === 'playing',
           lastAction: p.lastAction,
           lastThought: '',
@@ -704,17 +714,52 @@ export function createTable(ctx) {
     }, 40)
   }
 
+  // Ends the table for good: the human ran out of bullets, or only one player
+  // is left. No hand is dealt; the UI offers Reset instead of 下一手.
+  function endGame(message) {
+    clearAi()
+    state.gameOver = true
+    state.status = 'game-over'
+    state.toAct = null
+    state.winners = []
+    state.revealed = false
+    state.sbSeat = null
+    state.bbSeat = null
+    // No button on a finished table: isDealer/isSb/isBb are all false then.
+    state.dealer = null
+    for (let i = 0; i < players.length; i++) {
+      players[i].cards = []
+      players[i].bet = 0
+      players[i].committed = 0
+      players[i].allIn = false
+      players[i].acted = false
+      players[i].lastAction = ''
+    }
+    log(message)
+  }
+
   function dealHand() {
     clearAi()
+    // Bullets: a busted player rebuys up to MAX_REBUYS times, then sits out for
+    // good. Out players are simply folded for the whole hand, so every existing
+    // "who is still in this pot" check (live/findNextActor/makePots) skips them
+    // with no special cases.
+    let liveCount = 0
     for (let i = 0; i < players.length; i++) {
       const p = players[i]
-      if (p.stack <= 0) {
-        p.stack = START_STACK
-        log(p.name + ' 重新买入 ' + START_STACK)
+      const decision = rebuyDecision(p, { max: MAX_REBUYS, start: START_STACK })
+      if (decision.action === 'rebuy') {
+        p.rebuys = decision.rebuys
+        p.stack = decision.stack
+        log(p.name + ' 重新买入 ' + START_STACK + '（第 ' + p.rebuys + '/' + MAX_REBUYS + ' 次）')
+      } else if (decision.action === 'out' && !p.out) {
+        p.out = true
+        log(p.name + ' 买入用尽，出局')
       }
+      if (!p.out) liveCount += 1
       p.bet = 0
       p.committed = 0
-      p.folded = false
+      p.folded = !!p.out
       p.allIn = false
       p.acted = false
       p.cards = []
@@ -722,8 +767,19 @@ export function createTable(ctx) {
       p.lastThought = ''
       p.talk = ''
     }
+    if (liveCount < 2) {
+      endGame('只剩一名玩家，牌桌结束。点「Reset」再开一桌。')
+      return
+    }
+    if (players[0].out) {
+      endGame('你的 ' + MAX_REBUYS + ' 次买入已经用完，本局结束。点「Reset」再开一桌。')
+      return
+    }
     state.handNo += 1
-    state.dealer = cw(state.dealer)
+    // The button moves on to the next player still in the game.
+    let dealer = cw(state.dealer)
+    for (let i = 0; i < players.length && players[dealer].out; i++) dealer = cw(dealer)
+    state.dealer = dealer
     state.deck = shuffle(makeDeck())
     state.board = []
     state.street = 'preflop'
@@ -732,13 +788,18 @@ export function createTable(ctx) {
     state.status = 'playing'
     state.lastPot = 0
     state.actionLog = []
+    const activeSeats = players.filter(function (p) { return !p.out }).map(function (p) { return p.seat })
+    const blinds = blindSeats(players.length, activeSeats, state.dealer)
+    state.sbSeat = blinds.sb
+    state.bbSeat = blinds.bb
     for (let r = 0; r < 2; r++) {
       for (let i = 0; i < players.length; i++) {
-        players[cw(state.dealer, 1 + i)].cards.push(state.deck.pop())
+        const p = players[cw(state.dealer, 1 + i)]
+        if (!p.out) p.cards.push(state.deck.pop())
       }
     }
-    const sbSeat = cw(state.dealer, 1)
-    const bbSeat = cw(state.dealer, 2)
+    const sbSeat = blinds.sb
+    const bbSeat = blinds.bb
     put(players[sbSeat], SB)
     players[sbSeat].lastAction = '小盲 ' + players[sbSeat].bet
     put(players[bbSeat], BB)
@@ -759,15 +820,21 @@ export function createTable(ctx) {
 
   function start() {
     state.handNo = 0
+    state.gameOver = false
     state.dealer = Math.floor(Math.random() * players.length)
-    for (let i = 0; i < players.length; i++) players[i].stack = START_STACK
+    for (let i = 0; i < players.length; i++) {
+      players[i].stack = START_STACK
+      players[i].rebuys = 0
+      players[i].out = false
+    }
     state.log = []
-    log('新牌桌：盲注 ' + SB + '/' + BB + '，记分牌 ' + START_STACK)
+    log('新牌桌：盲注 ' + SB + '/' + BB + '，记分牌 ' + START_STACK + '，每人 ' + MAX_REBUYS + ' 次买入')
     dealHand()
     return snapshot()
   }
 
   function nextHand() {
+    if (state.gameOver) return snapshot()
     if (state.status === 'idle') return start()
     if (state.status === 'playing') return snapshot()
     dealHand()
@@ -778,12 +845,18 @@ export function createTable(ctx) {
     clearAi()
     state.status = 'idle'
     state.handNo = 0
+    state.gameOver = false
+    state.dealer = null
     state.board = []
     state.toAct = null
+    state.sbSeat = null
+    state.bbSeat = null
     state.winners = []
     state.revealed = false
     for (let i = 0; i < players.length; i++) {
       players[i].stack = START_STACK
+      players[i].rebuys = 0
+      players[i].out = false
       players[i].bet = 0
       players[i].committed = 0
       players[i].folded = false
