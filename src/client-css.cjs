@@ -43,7 +43,7 @@ module.exports = `
 .hk-table{position:relative;width:100%;height:auto;max-height:min(520px,calc(100cqh - 180px));aspect-ratio:2.15 / 1;background:var(--hk-subtle);border:1px solid var(--hk-line);border-radius:9999px;margin-bottom:52px}
 .hk-center{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px}
 .hk-pot{font-size:12px;color:var(--hk-text-3);font-weight:600;background:var(--hk-surface);border:1px solid var(--hk-line);border-radius:999px;padding:5px 10px}
-.hk-board{display:flex;gap:10px;min-height:100px;align-items:center;justify-content:center}
+.hk-board{display:flex;gap:10px;min-height:100px;align-items:center;justify-content:center;perspective:640px}
 .hk-banner{max-width:360px;text-align:center;font-size:12px;line-height:1.45;color:var(--hk-text-3);background:var(--hk-surface);border:1px solid var(--hk-line-soft);border-radius:12px;padding:8px 12px}
 .hk-banner.hk-over-banner{color:var(--hk-win-fg);background:var(--hk-win-bg);border-color:var(--hk-win-line);font-weight:700;max-width:min(420px,86vw)}
 .hk-seat{position:absolute;width:168px;display:flex;flex-direction:column;align-items:center;gap:6px;z-index:2;overflow:visible}
@@ -70,6 +70,12 @@ module.exports = `
 .hk-card.red{color:var(--hk-card-red)}
 .hk-card.back{display:flex;align-items:center;justify-content:center;padding:0;background:var(--hk-card-bg);color:var(--hk-card-text)}
 .hk-card.empty{background:var(--hk-empty);border:1px dashed var(--hk-dash);box-shadow:none;color:transparent}
+/* A newly dealt community card flips in. React remounts the slot because its
+   key carries the card, so the animation replays for the flop (staggered by
+   dealDelay), the turn and the river, and never repeats on a re-render. */
+.hk-card.deal{animation:hk-deal .46s cubic-bezier(.2,.7,.3,1) both}
+@keyframes hk-deal{0%{opacity:.2;transform:rotateY(-86deg) scale(.92)}55%{opacity:1}100%{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.hk-card.deal{animation:none}}
 .hk-pill{display:flex;align-items:center;gap:8px;min-width:148px;background:var(--hk-surface);border:1px solid var(--hk-line);border-radius:999px;padding:5px 10px 5px 5px}
 .hk-potbet{font-size:10px;font-weight:650;color:var(--hk-bet-fg);background:var(--hk-bet-bg);border:1px solid var(--hk-bet-line);border-radius:999px;padding:2px 8px;white-space:nowrap}
 .hk-winbadge{font-size:11px;font-weight:800;color:#fff;background:linear-gradient(135deg,#f59e0b,#f97316);border-radius:999px;padding:2px 10px;box-shadow:0 2px 8px rgba(245,158,11,.45);white-space:nowrap;animation:hk-winpulse 1.1s ease-in-out infinite}
@@ -141,7 +147,7 @@ module.exports = `
 .hk-mini .hk-c-top{flex:none;display:flex;align-items:center;justify-content:flex-end;gap:6px}
 .hk-mini .hk-c-head{flex:none;display:flex;flex-direction:column;gap:6px;padding:7px 8px;border:1px solid var(--hk-line-soft);border-radius:12px;background:var(--hk-subtle)}
 .hk-mini .hk-c-row1{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.hk-mini .hk-c-board{flex:none;display:flex;gap:4px}
+.hk-mini .hk-c-board{flex:none;display:flex;gap:4px;perspective:520px}
 .hk-mini .hk-c-slot{display:flex}
 .hk-mini .hk-c-board .hk-card{width:34px;height:48px;border-radius:7px}
 .hk-mini .hk-c-board .hk-rank{top:3px;left:3px;font-size:11px}
@@ -155,6 +161,15 @@ module.exports = `
 .hk-mini .hk-c-hole .hk-cards .hk-card.fan-r{left:18px;transform:rotate(12deg)}
 .hk-mini .hk-c-hole .hk-rank{top:2px;left:3px;font-size:9px}
 .hk-mini .hk-c-hole .hk-suit{font-size:13px}
+/* Revealed hole cards inside a player row (showdown, or the winner of an
+   uncontested pot): smaller than the header pair so the 38px row never grows. */
+.hk-mini .hk-c-row .hk-c-hole.hk-c-open{flex:none}
+.hk-mini .hk-c-row .hk-c-hole.hk-c-open .hk-cards{width:34px;height:28px}
+.hk-mini .hk-c-row .hk-c-hole.hk-c-open .hk-cards .hk-card{width:20px;height:28px;border-radius:4px}
+.hk-mini .hk-c-row .hk-c-hole.hk-c-open .hk-cards .hk-card.fan-l{left:0;transform:rotate(-10deg)}
+.hk-mini .hk-c-row .hk-c-hole.hk-c-open .hk-cards .hk-card.fan-r{left:15px;transform:rotate(10deg)}
+.hk-mini .hk-c-row .hk-c-hole.hk-c-open .hk-rank{top:2px;left:2px;font-size:8px}
+.hk-mini .hk-c-row .hk-c-hole.hk-c-open .hk-suit{font-size:11px}
 .hk-mini .hk-c-handname{font-size:11px;font-weight:650;color:var(--hk-text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hk-mini .hk-c-hint{font-size:10px;color:var(--hk-text-dim);line-height:1.35}
 .hk-mini .hk-c-winner{display:flex;flex-direction:column;align-items:flex-end;gap:1px;text-align:right;max-width:198px;min-width:0}

@@ -238,7 +238,13 @@ export function createTable(ctx) {
         ? evalBest(hero.cards.concat(state.board)).name
         : (hero.cards.length === 2 ? '底牌' : ''),
       players: players.map(function (p) {
-        const show = p.kind === 'human' || state.revealed
+        // Bot hole cards stay hidden while a hand is live. They are revealed at
+        // a showdown, and — so the table can show who won with what — for the
+        // winner of an uncontested pot once the hand is over.
+        const isWinner = (state.winners || []).some(function (w) {
+          return (w.seats || []).indexOf(p.seat) !== -1
+        })
+        const show = p.kind === 'human' || state.revealed || (state.status === 'hand-over' && isWinner && !p.folded)
         return {
           id: p.id,
           name: p.name,

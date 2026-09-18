@@ -353,22 +353,35 @@ function cardView(card, opts) {
   const small = !!opts.small
   const backBrand = opts.backBrand || ''
   const fan = opts.fan || ''
-  const cls = 'hk-card' + (small ? ' sm' : '') + (fan ? ' fan-' + fan : '')
-  if (!card) return h('div', { className: cls + ' empty' })
+  // `deal` marks a freshly dealt community card: the element is remounted by a
+  // card-specific key, which is what replays the flip-in animation.
+  const deal = !!opts.deal
+  const cls = 'hk-card' + (small ? ' sm' : '') + (fan ? ' fan-' + fan : '') + (deal ? ' deal' : '')
+  const style = deal && opts.dealDelay ? { animationDelay: opts.dealDelay + 'ms' } : null
+  if (!card) return h('div', { className: cls + ' empty', style: style })
   if (card === 'back') {
     const pal = BRAND[backBrand]
     const showLogo = !!(backBrand && backBrand !== 'hero' && pal)
-    return h('div', { className: cls + ' back' }, showLogo ? BrandMark(backBrand, small ? 14 : 22, pal.bg) : null)
+    return h('div', { className: cls + ' back', style: style }, showLogo ? BrandMark(backBrand, small ? 14 : 22, pal.bg) : null)
   }
   const red = card.s === 'h' || card.s === 'd'
-  return h('div', { className: cls + (red ? ' red' : '') },
+  return h('div', { className: cls + (red ? ' red' : ''), style: style },
     h('span', { className: 'hk-rank' }, RANK[card.r] || card.r),
     h('span', { className: 'hk-suit' }, SUIT[card.s] || ''),
   )
 }
 
-function holePair(p) {
-  if (!p.hasCards) return null
+// Community cards are keyed by their own identity, so React unmounts the "empty"
+// slot and mounts a fresh element the moment a card lands — which is what
+// replays the flip-in animation. The flop (first three) staggers a little; the
+// turn and river land on their own.
+function boardCard(c, i, opts, slotClass) {
+  const props = { key: i + ':' + (c ? c.r + c.s : 'empty') }
+  if (slotClass) props.className = slotClass
+  return h('div', props, cardView(c || 'back', Object.assign({}, opts, { deal: true, dealDelay: i < 3 ? i * 70 : 0 })))
+}
+
+function holePair(p) {  if (!p.hasCards) return null
   const face = p.cards && p.cards.length === 2 && !p.folded
   const base = { small: p.seat !== 0, backBrand: p.kind === 'ai' ? (p.brand || '') : '' }
   const left = Object.assign({}, base, { fan: 'l' })
@@ -595,6 +608,10 @@ function Table(props) {
         ? (thinkLabel || '思考中')
         : (p.talk || p.lastAction || (p.out ? '买入用尽 · 出局' : (p.folded ? '已弃牌' : '')))
       const won = !!winnerSeats[p.seat]
+      // The hero's own cards already sit in the header; everyone else shows them
+      // once the host reveals them (showdown, or the winner of an uncontested
+      // pot once the hand is over).
+      const opened = p.seat !== 0 && !p.folded && p.cards && p.cards.length === 2
       return h('div', {
         key: p.id,
         className: 'hk-c-row'
@@ -620,6 +637,7 @@ function Table(props) {
           ),
           h('div', { className: 'hk-c-status' + (thinking ? '' : ' quiet') }, status),
         ),
+        opened ? h('div', { className: 'hk-c-hole hk-c-open' }, holePair(p)) : null,
         p.committed > 0 ? h('div', { className: 'hk-c-bet' }, fmt(p.committed)) : null,
       )
     }
@@ -636,9 +654,7 @@ function Table(props) {
         h('div', { className: 'hk-c-head' },
           h('div', { className: 'hk-c-row1' },
             h('div', { className: 'hk-c-board' },
-              boardSlots.map(function (c, i) {
-                return h('div', { key: i, className: 'hk-c-slot' }, cardView(c || 'back', boardOpts))
-              }),
+              boardSlots.map(function (c, i) { return boardCard(c, i, boardOpts, 'hk-c-slot') }),
             ),
             h('div', { className: 'hk-c-pot' }, idle ? '未开局' : ('底池 ' + fmt(state.pot || state.lastPot || 0))),
           ),
@@ -684,7 +700,7 @@ function Table(props) {
         h('div', { className: 'hk-center' },
           idle ? null : h('div', { className: 'hk-pot' }, '底池 ' + fmt(state.pot || state.lastPot || 0) + ' 筹码'),
           h('div', { className: 'hk-board' },
-            boardSlots.map(function (c, i) { return h('div', { key: i }, cardView(c || 'back', boardOpts)) }),
+            boardSlots.map(function (c, i) { return boardCard(c, i, boardOpts) }),
           ),
           idle ? h('div', { className: 'hk-banner' }, '五位玩家入座。每人只能看见自己的底牌。') : null,
           ended
