@@ -90,6 +90,13 @@ pnpm test         # node:test 单测（test/*.test.mjs）：纯逻辑 + 离线�
 
 单上下文布局：根 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
+## 发版约定（语义化版本）
+
+- 版本号遵循 semver 2.0.0，commit 遵循 Conventional Commits，两者对应：`fix:` → patch，`feat:` → minor，带 `BREAKING CHANGE` 或 `!` 的提交 → major（0.x 阶段升 minor）。
+- 每合并一个 PR 就发一版，不攒。发版前先把改动写进 `CHANGELOG.md` 的 Unreleased 段（Keep a Changelog 格式：不兼容变更 / 新增 / 修复 / 安全 / 内部），发版时把该段改成版本号和日期。
+- 发版命令：`npm version <patch|minor|major> -m "chore(release): v%s"` 自动改 package.json、提交并打 tag；然后 `git push --follow-tags`，再 `npm publish`（`prepack` 会自动 build）。tag 与 npm 版本必须一一对应。
+- API 与游戏规则稳定后发 1.0.0，此后不兼容变更才升 major。
+
 ## 约定
 
 - 全部游戏内文案（bot 人设、日志、UI 标签、talk 约束）是简体中文；代码注释用英文。
