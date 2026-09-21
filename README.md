@@ -129,6 +129,11 @@ pnpm check:contrast
    客户端模块元数据有缓存。
 
 `lib/` 是提交进 git 的构建产物：改完 `src/` 一定要 `pnpm build`，否则运行的是旧代码。
+## API 安全
+
+牌局 API 为每个浏览器签发随机的 `HttpOnly`、`SameSite=Strict` 会话 Cookie；不同浏览器各自拥有独立牌桌，牌面不会在会话之间共享。首次 GET `/dsh-holdem` 后，客户端使用响应中的 `X-CSRF-Token` 发送后续 POST 请求；POST 还必须使用 `application/json`，请求体上限为 4 MiB。
+
+`dsh-host-webserver` 默认只监听回环地址。不要在没有 TLS 和上游认证代理的情况下把 Web Server 暴露到局域网或公网；本插件的会话令牌用于会话隔离和 CSRF 防护，不替代部署层的用户身份认证。
 
 ## 许可证
 
