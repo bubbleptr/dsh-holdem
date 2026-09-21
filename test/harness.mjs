@@ -4,11 +4,21 @@
 import { apply } from '../src/host.js'
 
 // reply: the tool call every bot returns. opts.single: after the first stream
-// every further call never yields, which freezes the AI loop so a hand can be
-// inspected with exactly one bot action applied.
+// every further call never yields on its own — it only settles once the
+// request's AbortSignal fires (mirroring the real LlmAdapter, which reports
+// abort as a terminal `finish` chunk rather than throwing), or never settles
+// at all if the caller passed no signal. This freezes the AI loop so a hand
+// can be inspected mid-request, while still letting a test exercise a real
+// abort/cleanup path deterministically instead of hanging forever.
 export function harness(reply, opts) {
   const single = !!(opts && opts.single)
   const prompts = []
+  const streamOptions = []
+  // One promise per stream() call, resolved once that call's async
+  // generator has fully run its course (including its `finally`). Tests use
+  // this to wait for a hung, since-aborted request to actually settle
+  // instead of guessing at a sleep duration.
+  const streamSettled = []
   const cleanups = []
   let asked = 0
   let handler = null
@@ -19,14 +29,32 @@ export function harness(reply, opts) {
           stream(options) {
             asked++
             prompts.push(options.messages[0].content[0].text)
+            streamOptions.push(options)
+            let resolveSettled
+            streamSettled.push(new Promise((resolve) => { resolveSettled = resolve }))
             if (single && asked > 1) {
               return (async function* () {
-                await new Promise(function () {})
+                try {
+                  if (options.signal) {
+                    if (!options.signal.aborted) {
+                      await new Promise((resolve) => options.signal.addEventListener('abort', resolve, { once: true }))
+                    }
+                    yield { type: 'finish', reason: { kind: 'aborted' } }
+                  } else {
+                    await new Promise(function () {})
+                  }
+                } finally {
+                  resolveSettled()
+                }
               })()
             }
             return (async function* () {
-              yield { type: 'tool-call-delta', argumentsDelta: JSON.stringify(reply) }
-              yield { type: 'finish', reason: { kind: 'stop' } }
+              try {
+                yield { type: 'tool-call-delta', argumentsDelta: JSON.stringify(reply) }
+                yield { type: 'finish', reason: { kind: 'stop' } }
+              } finally {
+                resolveSettled()
+              }
             })()
           },
         }
@@ -57,6 +85,12 @@ export function harness(reply, opts) {
   return {
     handler,
     prompts,
+    // The full options object passed to llm.stream() for every request, in
+    // order, so a test can inspect e.g. the AbortSignal of the in-flight call.
+    streamOptions,
+    // Parallel array: settles once the corresponding stream() call's
+    // generator has fully finished (normal completion or post-abort).
+    streamSettled,
     // Browser-like session state: the host issues a session cookie and a CSRF
     // token on the first GET, and every POST must send both back.
     session: { cookie: '', csrf: '' },
