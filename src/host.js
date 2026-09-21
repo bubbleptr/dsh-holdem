@@ -1,12 +1,20 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { cardTxt, evalBest, makeDeck, shuffle, strength } from './cards.js'
 import { clampRaise, raiseCeiling } from './bets.js'
 import { MAX_REBUYS, blindSeats, rebuyDecision } from './table-rules.js'
 import { makePots } from './pots.js'
+import { sanitizeTalk, fallbackTalk } from './talk.js'
 import { avatarDataDir, avatarView, decodeAvatar, isPlayerId, loadBundled, loadOverrides, removeOverride, writeOverride } from './avatars.js'
 
 const START_STACK = 2000000
 const SB = 10000
 const BB = 20000
+const MAX_REQUEST_BYTES = 4 * 1024 * 1024
+const REQUEST_BODY_TIMEOUT_MS = 15 * 1000
+const MAX_SESSIONS = 32
+const SESSION_TTL_MS = 30 * 60 * 1000
+const SESSION_COOKIE = 'dsh_holdem_sid'
+const MUTATING_METHODS = ['start', 'act', 'next-hand', 'reset', 'set-avatar', 'clear-avatar']
 
 const BOTS = [
   { id: 'altman', name: 'Altman', emoji: 'A', brand: 'openai', company: 'OpenAI', loose: 0.04, agg: 0.58, bluff: 0.08, tag: 'OpenAI', style: '你是 OpenAI 创始人 Sam Altman。紧凶、爱讲愿景，但牌桌上绝不露底。垃圾牌就弃，强牌价值下注，很少大额诈唬。' },
@@ -24,19 +32,10 @@ const ACT_TOOL = {
     properties: {
       type: { type: 'string', enum: ['fold', 'check', 'call', 'raise', 'allin'], description: 'allin = 把全部筹码一次推上去，只在少数情况使用；普通加注请用 raise。' },
       amount: { type: 'number', description: 'Raise-to total in tokens, required for type=raise. Must sit inside the raise range given in the prompt.' },
-      talk: { type: 'string', description: '可选桌边闲话，必须是简体中文，最多16个字。禁止提到底牌、花色、点数、听牌、成牌或任何推理过程。' },
+      talk: { type: 'string', description: '必填桌边闲话，必须是简体中文，最多16个字。可以虚张声势，但禁止提到底牌、花色、点数、听牌、成牌或任何推理过程。' },
     },
-    required: ['type'],
+    required: ['type', 'talk'],
   },
-}
-
-function sanitizeTalk(raw) {
-  if (!raw || typeof raw !== 'string') return ''
-  let talk = raw.replace(/\s+/g, '').trim()
-  if (!talk) return ''
-  if (/[A-Za-z]{3,}/.test(talk)) return ''
-  if (/(底牌|手牌|洞牌|对子|同花|顺子|葫芦|四条|皇家|听牌|成牌|胜率|赔率|范围|range|odds|equity|[♠♥♦♣]|黑桃|红心|红桃|方块|梅花|[AKQJT2-9][shdc])/i.test(talk)) return ''
-  return talk.slice(0, 24)
 }
 
 function parseJsonObject(text) {
@@ -74,11 +73,12 @@ function createPlayer(spec, seat) {
     lastAction: '',
     lastThought: '',
     talk: '',
+    talkHistory: [],
     style: spec.style || '',
   }
 }
 
-export function createTable(ctx) {
+export function createTable(ctx, options) {
   const state = {
     status: 'idle',
     handNo: 0,
@@ -614,7 +614,7 @@ export function createTable(ctx) {
       'Players:\n' + others,
       'Action so far:\n' + history,
       'Legal actions: ' + describeLegal(legal),
-      '选择一个合法动作。金额要和底池相称：除非你真的打算把全部筹码压上（那才选 allin），否则不要把 raise 的 amount 写成区间上界。talk 必须是简体中文闲话，最多十六个字。禁止在 talk 里提到底牌、花色、点数或任何推理。',
+      '选择一个合法动作。金额要和底池相称：除非你真的打算把全部筹码压上（那才选 allin），否则不要把 raise 的 amount 写成区间上界。talk 必须填写简体中文闲话，最多十六个字。可以虚张声势或故意说不准确的话，但禁止在 talk 里提到底牌、花色、点数、牌型、听牌或任何推理。',
     ].join('\n\n')
   }
 
@@ -638,8 +638,9 @@ export function createTable(ctx) {
       '风格：' + (p.style || p.tag || '均衡'),
       '你只能看见自己的底牌。筹码单位是 tokens。',
       '用 holdem_act 做出一个合法动作。amount 是加注到的总额。',
-      'talk 可选，必须是简体中文桌边闲话，最多十六个字，符合人设。',
-      '绝对不要在 talk 里提到底牌、花色、点数、听牌、成牌、胜率或任何推理过程。',
+      'talk 必须填写简体中文桌边闲话，最多十六个字，符合人设。',
+      '你可以虚张声势，故意谎称自己的意图或信心，这些话不必符合真实牌力。',
+      '绝对不要在 talk 里提到底牌、花色、点数、牌型、听牌、成牌、胜率或任何推理过程。',
     ].join('')
     const options = {
       provider: sel.provider,
@@ -677,11 +678,21 @@ export function createTable(ctx) {
     })()
   }
 
+  function setAiTalk(p, action, raw) {
+    const history = p.talkHistory || []
+    const modelTalk = sanitizeTalk(raw)
+    p.talk = modelTalk && modelTalk !== history[history.length - 1]
+      ? modelTalk
+      : fallbackTalk(p, action, Math.random, history)
+    p.talkHistory = history.concat([p.talk]).slice(-6)
+    return p.talk
+  }
+
   function commitAi(p, choice) {
     applyAction(p, choice.type, choice.amount)
-    if (choice.talk) p.talk = choice.talk
+    setAiTalk(p, choice && choice.type, choice && choice.talk)
     state.actionLog = (state.actionLog || []).concat([state.street + ': ' + p.name + ' ' + p.lastAction]).slice(-16)
-    record({ kind: 'action', name: p.name, emoji: p.emoji, playerId: p.id, action: p.lastAction, talk: p.talk || '' })
+    record({ kind: 'action', name: p.name, emoji: p.emoji, playerId: p.id, action: p.lastAction, talk: p.talk })
     afterAction()
     scheduleAi()
   }
@@ -772,6 +783,7 @@ export function createTable(ctx) {
       p.lastAction = ''
       p.lastThought = ''
       p.talk = ''
+      p.talkHistory = []
     }
     if (liveCount < 2) {
       endGame('只剩一名玩家，牌桌结束。点「Reset」再开一桌。')
@@ -808,14 +820,16 @@ export function createTable(ctx) {
     const bbSeat = blinds.bb
     put(players[sbSeat], SB)
     players[sbSeat].lastAction = '小盲 ' + players[sbSeat].bet
+    if (players[sbSeat].kind === 'ai') setAiTalk(players[sbSeat], 'blind')
     put(players[bbSeat], BB)
     players[bbSeat].lastAction = '大盲 ' + players[bbSeat].bet
+    if (players[bbSeat].kind === 'ai') setAiTalk(players[bbSeat], 'blind')
     state.currentBet = players[bbSeat].bet
     state.minRaise = BB
     log('第 ' + state.handNo + ' 手 · ' + players[state.dealer].name + ' 坐庄')
     record({ kind: 'street', action: '第 ' + state.handNo + ' 手', street: 'preflop', name: players[state.dealer].name, emoji: players[state.dealer].emoji, playerId: players[state.dealer].id })
-    record({ kind: 'action', name: players[sbSeat].name, emoji: players[sbSeat].emoji, playerId: players[sbSeat].id, action: players[sbSeat].lastAction, street: 'preflop' })
-    record({ kind: 'action', name: players[bbSeat].name, emoji: players[bbSeat].emoji, playerId: players[bbSeat].id, action: players[bbSeat].lastAction, street: 'preflop' })
+    record({ kind: 'action', name: players[sbSeat].name, emoji: players[sbSeat].emoji, playerId: players[sbSeat].id, action: players[sbSeat].lastAction, talk: players[sbSeat].talk || '', street: 'preflop' })
+    record({ kind: 'action', name: players[bbSeat].name, emoji: players[bbSeat].emoji, playerId: players[bbSeat].id, action: players[bbSeat].lastAction, talk: players[bbSeat].talk || '', street: 'preflop' })
     state.toAct = findNextActor(bbSeat)
     if (state.toAct == null) {
       maybeRunout()
@@ -869,6 +883,8 @@ export function createTable(ctx) {
       players[i].allIn = false
       players[i].cards = []
       players[i].lastAction = ''
+      players[i].talk = ''
+      players[i].talkHistory = []
     }
     state.log = ['牌桌已重置。点击「开始对局」。']
     state.timeline = []
@@ -910,9 +926,15 @@ export function createTable(ctx) {
     return bundled[id] || null
   }
 
-  ctx.effect(function () {
-    return function () { clearAi() }
-  })
+  function dispose() {
+    clearAi()
+  }
+
+  if (!options || options.registerEffect !== false) {
+    ctx.effect(function () {
+      return dispose
+    })
+  }
 
   return {
     snapshot: snapshot,
@@ -923,41 +945,150 @@ export function createTable(ctx) {
     setAvatar: setAvatar,
     clearAvatar: clearAvatar,
     avatarFile: avatarFile,
+    dispose: dispose,
   }
 }
 
-function readJson(req) {
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message)
+    this.name = 'HttpError'
+    this.status = status
+  }
+}
+
+function requestHeader(req, name) {
+  const value = req && req.headers && req.headers[name]
+  if (Array.isArray(value)) return value.join(',')
+  return typeof value === 'string' ? value : ''
+}
+
+function discardRequest(req) {
+  if (req && !req.readableEnded && typeof req.resume === 'function') req.resume()
+}
+
+function requestContentLength(req) {
+  const raw = requestHeader(req, 'content-length').trim()
+  if (!raw) return null
+  if (!/^\d+$/.test(raw)) throw new HttpError(400, 'invalid content-length')
+  const length = Number(raw)
+  if (!Number.isSafeInteger(length)) throw new HttpError(400, 'invalid content-length')
+  return length
+}
+
+function readJson(req, maxBytes) {
+  const limit = maxBytes == null ? MAX_REQUEST_BYTES : maxBytes
+  const mediaType = requestHeader(req, 'content-type').split(';', 1)[0].trim().toLowerCase()
+  if (mediaType !== 'application/json') {
+    discardRequest(req)
+    return Promise.reject(new HttpError(415, 'content-type must be application/json'))
+  }
+
+  let declaredLength
+  try {
+    declaredLength = requestContentLength(req)
+  } catch (err) {
+    discardRequest(req)
+    return Promise.reject(err)
+  }
+  if (declaredLength != null && declaredLength > limit) {
+    discardRequest(req)
+    return Promise.reject(new HttpError(413, 'request body too large'))
+  }
+
   return new Promise(function (resolve, reject) {
     const chunks = []
-    req.on('data', function (chunk) { chunks.push(chunk) })
-    req.on('end', function () {
+    let total = 0
+    let settled = false
+    const timeout = setTimeout(function () {
+      fail(new HttpError(408, 'request body timeout'))
+    }, REQUEST_BODY_TIMEOUT_MS)
+    if (typeof timeout.unref === 'function') timeout.unref()
+
+    function cleanup() {
+      clearTimeout(timeout)
+      req.removeListener('data', onData)
+      req.removeListener('end', onEnd)
+      req.removeListener('error', onError)
+      req.removeListener('aborted', onAborted)
+      req.removeListener('close', onClose)
+    }
+
+    function fail(err) {
+      if (settled) return
+      settled = true
+      cleanup()
+      discardRequest(req)
+      reject(err)
+    }
+
+    function onData(chunk) {
+      const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      total += part.length
+      if (total > limit) {
+        fail(new HttpError(413, 'request body too large'))
+        return
+      }
+      chunks.push(part)
+    }
+
+    function onEnd() {
+      if (settled) return
+      settled = true
+      cleanup()
       try {
-        const raw = Buffer.concat(chunks).toString('utf8').trim()
+        if (declaredLength != null && total !== declaredLength) {
+          throw new HttpError(400, 'content-length mismatch')
+        }
+        const raw = Buffer.concat(chunks, total).toString('utf8').trim()
         resolve(raw ? JSON.parse(raw) : {})
       } catch (err) {
         reject(err)
       }
-    })
-    req.on('error', reject)
+    }
+
+    function onError(err) {
+      fail(err)
+    }
+
+    function onAborted() {
+      fail(new HttpError(400, 'request aborted'))
+    }
+
+    function onClose() {
+      if (!req.readableEnded) fail(new HttpError(400, 'request closed'))
+    }
+
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('error', onError)
+    req.on('aborted', onAborted)
+    req.on('close', onClose)
   })
 }
 
-function sendJson(res, status, body) {
+function sendJson(res, status, body, extraHeaders) {
   const data = Buffer.from(JSON.stringify(body))
-  res.writeHead(status, {
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
     'content-length': String(data.length),
     'cache-control': 'no-store',
-  })
+    'x-content-type-options': 'nosniff',
+  }
+  if (extraHeaders) Object.assign(headers, extraHeaders)
+  res.writeHead(status, headers)
   res.end(data)
 }
 
-function sendBytes(res, mime, bytes) {
-  res.writeHead(200, {
+function sendBytes(res, mime, bytes, extraHeaders) {
+  const headers = {
     'content-type': mime || 'application/octet-stream',
     'content-length': String(bytes.length),
     'cache-control': 'no-store',
-  })
+    'x-content-type-options': 'nosniff',
+  }
+  if (extraHeaders) Object.assign(headers, extraHeaders)
+  res.writeHead(200, headers)
   res.end(bytes)
 }
 
@@ -967,48 +1098,234 @@ function methodFromUrl(url) {
   return rest || 'get-state'
 }
 
+function cookieValue(req) {
+  const raw = requestHeader(req, 'cookie')
+  const parts = raw ? raw.split(';') : []
+  for (let i = 0; i < parts.length; i++) {
+    const at = parts[i].indexOf('=')
+    if (at < 0) continue
+    if (parts[i].slice(0, at).trim() === SESSION_COOKIE) return parts[i].slice(at + 1).trim()
+  }
+  return ''
+}
+
+function requestIsSecure(req) {
+  const forwarded = requestHeader(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase()
+  if (forwarded === 'https') return true
+  return !!(req && req.socket && req.socket.encrypted)
+}
+
+function sessionCookie(req, id) {
+  const parts = [
+    SESSION_COOKIE + '=' + id,
+    'Path=/dsh-holdem',
+    'HttpOnly',
+    'SameSite=Strict',
+    'Max-Age=' + Math.floor(SESSION_TTL_MS / 1000),
+  ]
+  if (requestIsSecure(req)) parts.push('Secure')
+  return parts.join('; ')
+}
+
+function sameSecret(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false
+  const a = Buffer.from(left)
+  const b = Buffer.from(right)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+function requestOrigin(req) {
+  const forwarded = requestHeader(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase()
+  const protocol = forwarded === 'https' || forwarded === 'http'
+    ? forwarded
+    : (req && req.socket && req.socket.encrypted ? 'https' : 'http')
+  const host = requestHeader(req, 'host').trim()
+  if (!host) return ''
+  try {
+    return new URL(protocol + '://' + host).origin
+  } catch (err) {
+    return ''
+  }
+}
+
+function validateCsrf(req, session) {
+  const token = requestHeader(req, 'x-csrf-token').trim()
+  if (!sameSecret(token, session && session.csrfToken)) throw new HttpError(403, 'csrf validation failed')
+}
+
+function validateOrigin(req) {
+  const expected = requestOrigin(req)
+  const origin = requestHeader(req, 'origin').trim()
+  if (origin) {
+    let actual = ''
+    try {
+      if (origin !== 'null') actual = new URL(origin).origin
+    } catch (err) {}
+    if (!expected || actual !== expected) throw new HttpError(403, 'cross-origin request rejected')
+  } else {
+    const referer = requestHeader(req, 'referer').trim()
+    if (referer) {
+      let actual = ''
+      try { actual = new URL(referer).origin } catch (err) {}
+      if (!expected || actual !== expected) throw new HttpError(403, 'cross-origin request rejected')
+    }
+  }
+  if (requestHeader(req, 'sec-fetch-site').trim().toLowerCase() === 'cross-site') {
+    throw new HttpError(403, 'cross-origin request rejected')
+  }
+}
+
+function errorStatus(err) {
+  if (err instanceof HttpError) return err.status
+  if (err instanceof SyntaxError || /unknown player|invalid image/.test(String((err && err.message) || err))) return 400
+  return 500
+}
+
 export const name = 'dsh-holdem'
 export const inject = ['timer', 'webServer']
 
 export function apply(ctx) {
-  const table = createTable(ctx)
+  const sessions = new Map()
+
+  function disposeSession(session) {
+    if (!session || !session.table || typeof session.table.dispose !== 'function') return
+    session.table.dispose()
+  }
+
+  function removeSession(id) {
+    const session = sessions.get(id)
+    if (!session) return
+    sessions.delete(id)
+    disposeSession(session)
+  }
+
+  function pruneSessions(now) {
+    for (const [id, session] of sessions) {
+      if (now - session.lastUsed > SESSION_TTL_MS) removeSession(id)
+    }
+  }
+
+  function findSession(req) {
+    const id = cookieValue(req)
+    if (!id) return null
+    const session = sessions.get(id)
+    if (!session) return null
+    const now = Date.now()
+    if (now - session.lastUsed > SESSION_TTL_MS) {
+      removeSession(id)
+      return null
+    }
+    session.lastUsed = now
+    return session
+  }
+
+  function createSession(req) {
+    const now = Date.now()
+    pruneSessions(now)
+    if (sessions.size >= MAX_SESSIONS) throw new HttpError(503, 'too many active sessions')
+    let id
+    do { id = randomBytes(32).toString('base64url') } while (sessions.has(id))
+    const session = {
+      id: id,
+      csrfToken: randomBytes(32).toString('base64url'),
+      table: createTable(ctx, { registerEffect: false }),
+      lastUsed: now,
+    }
+    sessions.set(id, session)
+    return session
+  }
+
+  function requireSession(req) {
+    const session = findSession(req)
+    if (!session) throw new HttpError(401, 'session required')
+    return session
+  }
+
+  function addSessionHeaders(headers, session, setCookie) {
+    if (session) headers['x-csrf-token'] = session.csrfToken
+    if (setCookie) headers['set-cookie'] = [setCookie]
+    return headers
+  }
+
+  ctx.effect(function () {
+    return function () {
+      for (const session of sessions.values()) disposeSession(session)
+      sessions.clear()
+    }
+  })
+
   ctx.effect(function () {
     return ctx.webServer.register({
       kind: 'prefix',
       path: '/dsh-holdem',
       handler: async function (req, res) {
         const method = methodFromUrl(req.url)
+        let session = null
+        let setCookie = ''
+        const responseHeaders = {}
+        const json = function (status, body) {
+          sendJson(res, status, body, addSessionHeaders(responseHeaders, session, setCookie))
+        }
+        const bytes = function (mime, data) {
+          sendBytes(res, mime, data, addSessionHeaders(responseHeaders, session, ''))
+        }
+
         try {
           if (req.method === 'GET' && method.indexOf('avatar/') === 0) {
+            discardRequest(req)
+            session = requireSession(req)
             const id = decodeURIComponent(method.slice('avatar/'.length).split('/')[0])
-            const file = table.avatarFile(id)
+            const file = session.table.avatarFile(id)
             if (!file) {
-              sendJson(res, 404, { error: 'no override' })
+              json(404, { error: 'no override' })
               return
             }
-            sendBytes(res, file.mime, file.bytes)
+            bytes(file.mime, file.bytes)
             return
           }
-          if (req.method === 'GET' || method === 'get-state') {
-            sendJson(res, 200, table.snapshot())
+          if (req.method === 'GET') {
+            // Do not let cross-origin pages allocate sessions as a side effect of a read.
+            validateOrigin(req)
+            discardRequest(req)
+            session = findSession(req)
+            if (!session) {
+              session = createSession(req)
+              setCookie = sessionCookie(req, session.id)
+            }
+            json(200, session.table.snapshot())
             return
           }
           if (req.method !== 'POST') {
-            sendJson(res, 405, { error: 'method not allowed' })
+            discardRequest(req)
+            json(405, { error: 'method not allowed' })
             return
           }
-          const args = await readJson(req)
-          if (method === 'start') sendJson(res, 200, table.start())
-          else if (method === 'act') sendJson(res, 200, table.act(args || {}))
-          else if (method === 'next-hand') sendJson(res, 200, table.nextHand())
-          else if (method === 'reset') sendJson(res, 200, table.reset())
-          else if (method === 'set-avatar') sendJson(res, 200, table.setAvatar(args || {}))
-          else if (method === 'clear-avatar') sendJson(res, 200, table.clearAvatar(args || {}))
-          else sendJson(res, 404, { error: 'unknown method' })
+          if (MUTATING_METHODS.indexOf(method) === -1) {
+            discardRequest(req)
+            json(404, { error: 'unknown method' })
+            return
+          }
+          session = requireSession(req)
+          addSessionHeaders(responseHeaders, session, '')
+          validateCsrf(req, session)
+          validateOrigin(req)
+          const args = await readJson(req, MAX_REQUEST_BYTES)
+          if (method === 'start') json(200, session.table.start())
+          else if (method === 'act') json(200, session.table.act(args || {}))
+          else if (method === 'next-hand') json(200, session.table.nextHand())
+          else if (method === 'reset') json(200, session.table.reset())
+          else if (method === 'set-avatar') json(200, session.table.setAvatar(args || {}))
+          else if (method === 'clear-avatar') json(200, session.table.clearAvatar(args || {}))
         } catch (err) {
-          const msg = String((err && err.message) || err)
-          const code = /unknown player|invalid image/.test(msg) ? 400 : 500
-          sendJson(res, code, { error: msg })
+          discardRequest(req)
+          if (res.headersSent) {
+            if (typeof res.destroy === 'function') res.destroy()
+            return
+          }
+          const status = errorStatus(err)
+          if (status === 408 || status === 413) responseHeaders.connection = 'close'
+          const message = status >= 500 ? 'internal server error' : String((err && err.message) || err)
+          json(status, { error: message })
         }
       },
     })

@@ -2,14 +2,22 @@ const React = require('react')
 const h = React.createElement
 
 const API = '/dsh-holdem'
+let csrfToken = ''
 
 function rpc(method, args) {
   const isGet = method === 'get-state'
+  const headers = isGet
+    ? {}
+    : { 'content-type': 'application/json', 'x-csrf-token': csrfToken }
   return fetch(API + '/' + method, {
     method: isGet ? 'GET' : 'POST',
-    headers: isGet ? undefined : { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    headers: headers,
     body: isGet ? undefined : JSON.stringify(args || {}),
   }).then(function (res) {
+    const nextToken = res.headers.get('x-csrf-token')
+    if (nextToken) csrfToken = nextToken
+    else if (res.status === 401 || res.status === 403) csrfToken = ''
     return res.json().then(function (body) {
       if (!res.ok) throw new Error((body && body.error) || ('holdem ' + res.status))
       return body

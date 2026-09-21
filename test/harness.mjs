@@ -57,22 +57,40 @@ export function harness(reply, opts) {
   return {
     handler,
     prompts,
+    // Browser-like session state: the host issues a session cookie and a CSRF
+    // token on the first GET, and every POST must send both back.
+    session: { cookie: '', csrf: '' },
     dispose() { cleanups.forEach((fn) => fn()) },
   }
 }
 
-function fakeReq(method, url, body) {
+function fakeReq(method, url, body, session) {
   const listeners = {}
+  const headers = { host: 'holdem.test', origin: 'http://holdem.test' }
+  if (session && session.cookie) headers.cookie = session.cookie
+  if (method === 'POST') {
+    headers['content-type'] = 'application/json'
+    if (session && session.csrf) headers['x-csrf-token'] = session.csrf
+  }
   const req = {
     method,
     url,
+    headers,
+    socket: { encrypted: false },
+    readableEnded: false,
     on(ev, fn) {
       ;(listeners[ev] = listeners[ev] || []).push(fn)
       return req
     },
+    removeListener(ev, fn) {
+      listeners[ev] = (listeners[ev] || []).filter((f) => f !== fn)
+      return req
+    },
+    resume() { return req },
   }
   setTimeout(() => {
     if (body) (listeners.data || []).forEach((fn) => fn(Buffer.from(body)))
+    req.readableEnded = true
     ;(listeners.end || []).forEach((fn) => fn())
   }, 0)
   return req
@@ -81,15 +99,21 @@ function fakeReq(method, url, body) {
 function fakeRes() {
   return {
     code: 0,
+    headers: {},
     body: '',
-    writeHead(code) { this.code = code },
+    writeHead(code, headers) { this.code = code; this.headers = headers || {} },
     end(data) { if (data) this.body += String(data) },
   }
 }
 
-export async function call(handler, method, url, body) {
+export async function call(handler, method, url, body, session) {
   const res = fakeRes()
-  await handler(fakeReq(method, url, body), res)
+  await handler(fakeReq(method, url, body, session), res)
+  if (session) {
+    const setCookie = res.headers['set-cookie']
+    if (setCookie) session.cookie = String(Array.isArray(setCookie) ? setCookie[0] : setCookie).split(';', 1)[0]
+    if (res.headers['x-csrf-token']) session.csrf = res.headers['x-csrf-token']
+  }
   return res.body ? JSON.parse(res.body) : null
 }
 
@@ -98,10 +122,15 @@ export const ACTION = /加注至|全下|跟注|弃牌|下注|过牌/
 // "you" — they must not count as bot actions.
 export const botActions = (snap) => snap.log.filter((l) => ACTION.test(l) && !/^you /.test(l)).length
 
-export const post = (h, method, args) =>
-  call(h.handler, 'POST', '/dsh-holdem/' + method, args ? JSON.stringify(args) : '')
+// The host rejects a sessionless POST with 401 rather than silently creating a
+// table for it, so — like the browser client — fetch state once to obtain the
+// session cookie and CSRF token before the first mutation.
+export const post = async (h, method, args) => {
+  if (!h.session.cookie) await state(h)
+  return call(h.handler, 'POST', '/dsh-holdem/' + method, args ? JSON.stringify(args) : '', h.session)
+}
 
-export const state = (h) => call(h.handler, 'GET', '/dsh-holdem', '')
+export const state = (h) => call(h.handler, 'GET', '/dsh-holdem', '', h.session)
 
 // Deterministic Math.random replacement (mulberry32): shuffle() and the dealer
 // pick both draw from it, so a seeded table is fully reproducible. Assign it in
