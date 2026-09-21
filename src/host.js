@@ -112,6 +112,11 @@ export function createTable(ctx, options) {
 
   let aiTimer = null
   let aiSeq = 0
+  // Aborts the currently in-flight askAgent() LLM request, if any, so a
+  // disposed/reset table doesn't leave a request running to completion in
+  // the background (its result is already discarded by the seq/handNo/toAct
+  // checks below, but cleanup should still reach quiescence).
+  let aiAbort = null
 
   function log(text) {
     state.log = state.log.concat([text]).slice(-10)
@@ -138,6 +143,10 @@ export function createTable(ctx, options) {
     if (aiTimer) {
       aiTimer()
       aiTimer = null
+    }
+    if (aiAbort) {
+      aiAbort.abort()
+      aiAbort = null
     }
   }
 
@@ -657,24 +666,33 @@ export function createTable(ctx, options) {
       maxTokens: 700,
     }
     if (sel.reasoningEffort) options.reasoningEffort = sel.reasoningEffort
+    const controller = new AbortController()
+    aiAbort = controller
+    options.signal = controller.signal
 
     return (async function () {
-      let text = ''
-      let toolArgs = ''
-      for await (const chunk of llm.stream(options)) {
-        if (chunk.type === 'text-delta' && chunk.text) {
-          text += chunk.text
-        } else if (chunk.type === 'tool-call-delta' && chunk.argumentsDelta) {
-          toolArgs += chunk.argumentsDelta
-        } else if (chunk.type === 'block-end' && chunk.block && chunk.block.type === 'tool-call') {
-          toolArgs = chunk.block.arguments || toolArgs
-        } else if (chunk.type === 'finish' && chunk.reason && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')) {
-          const msg = chunk.reason.failure && chunk.reason.failure.message
-          throw new Error(msg || 'llm finish ' + chunk.reason.kind)
+      try {
+        let text = ''
+        let toolArgs = ''
+        for await (const chunk of llm.stream(options)) {
+          if (chunk.type === 'text-delta' && chunk.text) {
+            text += chunk.text
+          } else if (chunk.type === 'tool-call-delta' && chunk.argumentsDelta) {
+            toolArgs += chunk.argumentsDelta
+          } else if (chunk.type === 'block-end' && chunk.block && chunk.block.type === 'tool-call') {
+            toolArgs = chunk.block.arguments || toolArgs
+          } else if (chunk.type === 'finish' && chunk.reason && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')) {
+            const msg = chunk.reason.failure && chunk.reason.failure.message
+            throw new Error(msg || 'llm finish ' + chunk.reason.kind)
+          }
         }
+        const parsed = parseJsonObject(toolArgs) || parseJsonObject(text)
+        return normalizeChoice(parsed, legal, fallback)
+      } finally {
+        // Only clear the slot if it's still ours — clearAi() may already have
+        // replaced or nulled it (abort, or a newer request scheduled since).
+        if (aiAbort === controller) aiAbort = null
       }
-      const parsed = parseJsonObject(toolArgs) || parseJsonObject(text)
-      return normalizeChoice(parsed, legal, fallback)
     })()
   }
 
