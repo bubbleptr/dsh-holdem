@@ -12,7 +12,7 @@ dsh-holdem 是 DeepSeek Harness (dsh) 的插件：六人无限注德州扑克，
 pnpm install
 pnpm build        # 一次性构建（scripts/build.mjs），产出 lib/
 pnpm dev          # watch 模式（scripts/dev.mjs），只监听 client 侧源码重建 lib/client.js
-pnpm test         # node:test 单测（test/*.test.mjs），覆盖 cards.js 与 pots.js 纯逻辑
+pnpm test         # node:test 单测（test/*.test.mjs）：纯逻辑 + 离线引擎（test/harness.mjs stub 掉 llm 服务）
 ```
 
 发包时 `prepack` 会自动执行 build。无 lint 配置。
@@ -27,7 +27,7 @@ pnpm test         # node:test 单测（test/*.test.mjs），覆盖 cards.js 与 
 
 插件分为两个半区，由 `scripts/build.mjs` 用 esbuild 分别打包：
 
-纯逻辑单独成模块并有单测：`src/cards.js`（牌力评估，`eval5`/`evalBest` 等）、`src/pots.js`（边池分层 `makePots`）；`src/client-css.cjs` 是 client 的整段 CSS 字符串。牌局引擎（`createTable` 闭包）刻意保持在 `src/host.js` 内未拆——共享可变状态，拆分需先补更多特征测试。
+纯逻辑单独成模块并有单测：`src/cards.js`（牌力评估，`eval5`/`evalBest` 等）、`src/pots.js`（边池分层 `makePots`）、`src/bets.js`（下注尺度 `raiseCeiling`/`clampRaise`）、`src/table-rules.js`（买入/出局 `rebuyDecision`、盲注座位 `blindSeats`，含单挑）；`src/client-css.cjs` 是 client 的整段 CSS 字符串。牌局引擎（`createTable` 闭包）刻意保持在 `src/host.js` 内未拆——共享可变状态，拆分需先补更多特征测试；引擎级测试用 `test/harness.mjs` stub 掉 `llm` 服务离线驱动（`test/ai-sizing.test.mjs`、`test/rebuys.test.mjs`），需要确定性时用 `seedRandom(seed)` 替换 `Math.random`。
 
 **Host（`src/host.js` → `lib/index.js`，Node/ESM）**
 - cordis 风格插件：`export const name / inject = ['timer', 'webServer']` 和 `apply(ctx)`。build 脚本会校验这组导出，缺了会构建失败。
@@ -42,6 +42,8 @@ pnpm test         # node:test 单测（test/*.test.mjs），覆盖 cards.js 与 
 - `apply(ctx)` 里用 `ctx.effect` 注入 `<style>`，用 `ctx.slots.inject('conversation.view')` 注册 Tab。
 - UI 通过轮询 GET `/dsh-holdem` 获取 snapshot，动作走 POST；无 WebSocket。
 - 样式全部是 `hk-` 前缀的手写 CSS 字符串，其中有针对 `[data-slot="conversation.session"]` 宿主容器的 `!important` 覆盖，改布局时注意别破坏。
+- 社区牌用 `boardCard(c, i, opts, slotClass)` 渲染：它给的 React key 里带牌面（`i + ':' + 牌`），靠"牌落地即换 key → 重新挂载"重播 `.hk-deal` 翻牌动画；改回下标 key 动画就只出现一次。小窗与 Tab 共用同一条 `useStore` 轮询（展开 280ms / 收起 2000ms）。
+- host 侧 `snapshot()` 决定 `cards` 是否下发：一手进行中只给人类自己的底牌，摊牌（`state.revealed`）给所有未弃牌者，非摊牌收池只给赢家那两张。别放宽这条约束，`test/reveal.test.mjs` 钉着它。
 
 **打包/分发**
 - `package.json` 的 `dsh` 字段声明插件元数据：`bundle.patch` 指向 `cordis.patch.yml`（把本包插入 web 组合），`client.inject` 声明客户端运行时依赖。
