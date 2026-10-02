@@ -112,13 +112,21 @@ export function loadBundled(dir) {
   return out
 }
 
-export function avatarView(id, overrides, bundled) {
+// Avatars load through <img src>, which cannot carry the session header the
+// JSON API uses. The media token travels in the URL so the desktop renderer
+// (whose cookie jar belongs to the shell, not to this plugin) can still fetch
+// the bitmap, while the token stays unguessable and out of the CSRF path.
+function avatarSrc(id, rev, mediaToken) {
+  return '/dsh-holdem/avatar/' + id + '?v=' + rev + (mediaToken ? '&t=' + encodeURIComponent(mediaToken) : '')
+}
+
+export function avatarView(id, overrides, bundled, mediaToken) {
   const rec = overrides && overrides[id]
   if (rec) {
     return {
       kind: 'override',
       seed: id,
-      src: '/dsh-holdem/avatar/' + id + '?v=' + rec.rev,
+      src: avatarSrc(id, rec.rev, mediaToken),
     }
   }
   const pack = bundled && bundled[id]
@@ -126,7 +134,7 @@ export function avatarView(id, overrides, bundled) {
     return {
       kind: 'default',
       seed: id,
-      src: '/dsh-holdem/avatar/' + id + '?v=' + pack.rev,
+      src: avatarSrc(id, pack.rev, mediaToken),
     }
   }
   return { kind: 'identicon', seed: id, src: '' }

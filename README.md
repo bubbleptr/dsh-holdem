@@ -9,7 +9,17 @@
 
 ## 安装
 
-已有 DeepSeek Harness 时，两条命令：
+### 桌面版
+
+桌面版（DeepSeek Harness.app）自带一套 dsh CLI，装到它自己的 `desktop` profile：
+
+```sh
+"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add dsh-holdem
+```
+
+装完桌面版会热重载 profile 并把新的客户端模块推给页面，通常不用重启；如果「德州扑克」Tab 没出现，退出重开桌面版。
+
+### Web
 
 ```sh
 dsh plugin --profile web add dsh-holdem
@@ -18,7 +28,7 @@ dsh --profile web
 
 装的是 npm 上的预构建包，不用 clone、不用 build、不用 `allowBuilds`。
 
-卸载：
+卸载（把 profile 与 CLI 换成对应的一套）：
 
 ```sh
 dsh plugin --profile web remove dsh-holdem
@@ -128,10 +138,21 @@ pnpm check:contrast
 3. 改包元数据（`package.json` 的 `dsh` 字段、`cordis.patch.yml`）→ 必须重启，
    客户端模块元数据有缓存。
 
+桌面版是同一个 web 组合：`pnpm build` 后客户端 bundle 由 HMR 推送，插件配置变化宿主会热重载；两者都没生效时再退出重开桌面版。把它指向本仓库：
+
+```sh
+"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add /Users/void/code/dsh-holdem
+```
+
 `lib/` 是提交进 git 的构建产物：改完 `src/` 一定要 `pnpm build`，否则运行的是旧代码。
+
 ## API 安全
 
-牌局 API 为每个浏览器签发随机的 `HttpOnly`、`SameSite=Strict` 会话 Cookie；不同浏览器各自拥有独立牌桌，牌面不会在会话之间共享。首次 GET `/dsh-holdem` 后，客户端使用响应中的 `X-CSRF-Token` 发送后续 POST 请求；POST 还必须使用 `application/json`，请求体上限为 4 MiB。
+首次 GET `/dsh-holdem` 签发的会话 id 走 `X-Holdem-Session` 响应头，CSRF 令牌走 `X-CSRF-Token` 响应头；客户端把两者存在 `localStorage` 并随请求回传。web 端同时保留 `HttpOnly`、`SameSite=Strict` 的会话 Cookie，旧客户端仍可只靠 Cookie 建会话（请求头优先于 Cookie）。不同浏览器各自拥有独立牌桌，牌面不会在会话之间共享。
+
+之所以不以 Cookie 为准：桌面版把 `dsh-app://` 请求转发给回环 Host 时会**丢弃客户端 Cookie、并扣掉响应里的 `Set-Cookie`**，只有自定义请求头能跨过去。头像走 `<img src>`、带不了请求头，所以它的 URL 里带一个独立的媒体令牌（`?t=`）；该令牌只授权读头像，不能驱动任何动作。
+
+POST 必须带 `X-CSRF-Token`、使用 `application/json`，请求体上限 4 MiB。`Origin` 存在且不属于本机 Host 时拒绝；非 http(s) 的 `Referer`（桌面版是 `dsh-app://app`）视为无信息。真正的 CSRF 控制是「必须带 `X-CSRF-Token` 自定义头」——跨源页面设不了自定义头。
 
 `dsh-host-webserver` 默认只监听回环地址。不要在没有 TLS 和上游认证代理的情况下把 Web Server 暴露到局域网或公网；本插件的会话令牌用于会话隔离和 CSRF 防护，不替代部署层的用户身份认证。
 

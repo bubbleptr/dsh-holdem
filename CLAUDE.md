@@ -20,6 +20,7 @@ pnpm test         # node:test 单测（test/*.test.mjs）：纯逻辑 + 离线�
 开发调试循环（本机 profile 已 `link:` 到本仓库，dsh CLI 用 `npx @deepseek-ai/dsh` 调用）：
 - 改 `src/client.cjs`（UI）：一个终端跑 `pnpm dev`，另一个终端跑 `npx @deepseek-ai/dsh --profile web`。web GUI 常驻挂载 client-hmr 插件（无需任何旗标；旧版曾要求 `--dev`，现已移除），它轮询 bundle 文件：保存 → 自动重建 → 浏览器自动热重载，无需重启或刷新（插件 React state 会丢，但牌局状态在 host 侧，无影响）。
 - 改 `src/host.js`：`pnpm build` 后重启 `npx @deepseek-ai/dsh --profile web`。host 侧共享 HMR 官方暂未启用，没有免重启方案。
+- 桌面版（DeepSeek Harness.app）跑同一个 web 组合：改完 `pnpm build` 后客户端 bundle 由 HMR 推送、插件配置变化宿主会热重载，未生效时退出重开 app。它自带 CLI：`"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"`（`plugin --profile desktop add ...` 管理插件，`add /绝对路径` 是本地 link）。
 
 注意：`lib/` 是提交进 git 的构建产物，改完 `src/` 必须重新 build，否则运行的还是旧代码。
 
@@ -33,6 +34,8 @@ pnpm test         # node:test 单测（test/*.test.mjs）：纯逻辑 + 离线�
 - cordis 风格插件：`export const name / inject = ['timer', 'webServer']` 和 `apply(ctx)`。build 脚本会校验这组导出，缺了会构建失败。
 - `createTable(ctx)` 是全部牌局引擎：单例内存状态（无持久化），发牌、下注轮、边池、5 张牌评牌（`eval5`）、结算。
 - 通过 `ctx.webServer.register({ kind: 'prefix', path: '/dsh-holdem' })` 暴露 JSON API：GET 任意路径返回 snapshot；POST `/start`、`/act`、`/next-hand`、`/reset`。每个调用都返回完整 snapshot。
+- 会话隔离：首次 GET 建会话，id 走 `X-Holdem-Session` 响应头，CSRF 走 `X-CSRF-Token`；请求头优先于会话 Cookie（web 兼容）。桌面壳转发 `dsh-app://` 请求时会丢弃客户端 Cookie 并扣掉 `Set-Cookie`，所以不能把 Cookie 当主通道——`test/desktop-transport.test.mjs` 钉住这一点。
+- 头像走 `<img src>`，URL 里带每会话的媒体令牌 `?t=`（`findSessionByMediaToken`）。该令牌只授权读图（含用户上传的覆盖头像），不能驱动任何动作。
 - AI 决策链路（`askAgent`）：从 `ctx.get('llm')` 和 `ctx.get('agentDefaultModel').currentSelection()` 拿当前模型，用 `holdem_act` 工具调用流式请求；任何一环缺失或出错都回退到启发式 `decideAi`（由每个 bot 的 `loose/agg/bluff` 参数驱动），并把 `state.agentModel` 标为 `heuristic`。
 - AI 行动由 `ctx.timeout` 调度，用 `aiSeq` 序号 + `handNo`/`toAct` 三重校验丢弃过期回调（换手牌、重置后旧请求不能落地）。
 - 防泄牌是刻意设计：prompt 只含该 bot 自己的底牌；`sanitizeTalk` 过滤桌边闲话中的牌面、花色、胜率等词并限长。改 prompt 或 talk 相关逻辑时必须保持这条约束。
@@ -40,14 +43,14 @@ pnpm test         # node:test 单测（test/*.test.mjs）：纯逻辑 + 离线�
 **Client（`src/client.cjs` → `lib/client.js`，浏览器/CJS）**
 - 必须写成 CommonJS（`require('react')` / `module.exports`）：build 脚本把它包进 `window.__ModuleLoader__.load({ id, factory })` 包装器，React 由 harness 提供（esbuild external）。
 - `apply(ctx)` 里用 `ctx.effect` 注入 `<style>`，用 `ctx.slots.inject('conversation.view')` 注册 Tab。
-- UI 通过轮询 GET `/dsh-holdem` 获取 snapshot，动作走 POST；无 WebSocket。
+- UI 通过轮询 GET `/dsh-holdem` 获取 snapshot，动作走 POST；无 WebSocket。会话 id 与 CSRF 令牌从响应头读取、存进 `localStorage`（`dsh-holdem.session`）并随请求回传，401 时丢弃陈旧会话。
 - 样式全部是 `hk-` 前缀的手写 CSS 字符串，其中有针对 `[data-slot="conversation.session"]` 宿主容器的 `!important` 覆盖，改布局时注意别破坏。
 - 社区牌用 `boardCard(c, i, opts, slotClass)` 渲染：它给的 React key 里带牌面（`i + ':' + 牌`），靠"牌落地即换 key → 重新挂载"重播 `.hk-deal` 翻牌动画；改回下标 key 动画就只出现一次。小窗与 Tab 共用同一条 `useStore` 轮询（展开 280ms / 收起 2000ms）。
 - host 侧 `snapshot()` 决定 `cards` 是否下发：一手进行中只给人类自己的底牌，摊牌（`state.revealed`）给所有未弃牌者，非摊牌收池只给赢家那两张。别放宽这条约束，`test/reveal.test.mjs` 钉着它。
 
 **打包/分发**
 - `package.json` 的 `dsh` 字段声明插件元数据：`bundle.patch` 指向 `cordis.patch.yml`（把本包插入 web 组合），`client.inject` 声明客户端运行时依赖。
-- 用户通过 `dsh plugin --profile web add dsh-holdem` 安装 npm 预构建包，不需要 clone/build。
+- 用户通过 `dsh plugin --profile web add dsh-holdem` 安装 npm 预构建包，不需要 clone/build；桌面版把 profile 换成 `desktop`、CLI 换成 app 内那套：`dsh plugin --profile desktop add dsh-holdem`。
 
 ## dsh 插件开发要点（摘自官方文档）
 

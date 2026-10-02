@@ -1,23 +1,67 @@
 const React = require('react')
 const h = React.createElement
 
+// The host ships English and Chinese and switches between them live. Titles the
+// plugin shows in the host's own chrome (the tab) and at the top of its views go
+// through this namespace so they follow the active host language.
+const NS = 'dsh-holdem'
+const TEXT = {
+  zh: { tab: '德州扑克', title: '无限注德州扑克' },
+  en: { tab: "Texas Hold'em", title: 'No-Limit Inference' },
+}
+
+// Slot components receive the bound translator as a prop. Fall back to the
+// shipped English when the locale seat is missing so a title never renders as a
+// raw key.
+function tr(t, key, fallback) {
+  if (typeof t !== 'function') return fallback
+  const text = t(key)
+  return typeof text === 'string' && text !== key ? text : fallback
+}
+
 const API = '/dsh-holdem'
+// The desktop shell proxies dsh-app:// requests to the loopback Host with a
+// cookie jar of its own, so this client identifies its table with an explicit
+// token instead of relying on Set-Cookie. Web keeps the identical path; the
+// host still accepts the session cookie as a fallback for older clients.
+const SESSION_KEY = 'dsh-holdem.session'
 let csrfToken = ''
+let sessionToken = storedSession()
+
+function storedSession() {
+  try { return window.localStorage.getItem(SESSION_KEY) || '' } catch (e) { return '' }
+}
+
+function rememberSession(token) {
+  if (!token || token === sessionToken) return
+  sessionToken = token
+  try { window.localStorage.setItem(SESSION_KEY, token) } catch (e) {}
+}
+
+function forgetSession() {
+  sessionToken = ''
+  try { window.localStorage.removeItem(SESSION_KEY) } catch (e) {}
+}
 
 function rpc(method, args) {
   const isGet = method === 'get-state'
   const headers = isGet
     ? {}
     : { 'content-type': 'application/json', 'x-csrf-token': csrfToken }
+  if (sessionToken) headers['x-holdem-session'] = sessionToken
   return fetch(API + '/' + method, {
     method: isGet ? 'GET' : 'POST',
     credentials: 'same-origin',
     headers: headers,
     body: isGet ? undefined : JSON.stringify(args || {}),
   }).then(function (res) {
+    rememberSession(res.headers.get('x-holdem-session'))
     const nextToken = res.headers.get('x-csrf-token')
     if (nextToken) csrfToken = nextToken
     else if (res.status === 401 || res.status === 403) csrfToken = ''
+    // A rejected session token is stale (host restarted, table evicted): drop
+    // it so the next poll starts a fresh table instead of looping on 401.
+    if (res.status === 401) forgetSession()
     return res.json().then(function (body) {
       if (!res.ok) throw new Error((body && body.error) || ('holdem ' + res.status))
       return body
@@ -693,7 +737,7 @@ function Table(props) {
     h('div', { className: 'hk-body' },
     h('div', { className: 'hk-main' },
     h('div', { className: 'hk-top' },
-      h('div', { className: 'hk-title' }, 'No-Limit Inference'),
+      h('div', { className: 'hk-title' }, tr(props.t, 'title', 'No-Limit Inference')),
       h('div', { className: 'hk-meta' },
         idle
           ? '六人桌 · Altman / 达里奥 / 马斯克 / 梁文峰 / 黄仁勋'
@@ -777,7 +821,7 @@ function usePokerActions() {
   }, [])
 }
 
-function PokerView() {
+function PokerView(props) {
   const snap = useStore(280)
   const actions = usePokerActions()
   return h('div', { style: { flex: 1, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
@@ -786,6 +830,7 @@ function PokerView() {
       state: snap.state,
       busy: snap.busy,
       now: snap.now,
+      t: props.t,
     }, actions)),
   )
 }
@@ -825,7 +870,7 @@ function stopPointer(e) {
  * `position:absolute; inset:0; pointer-events:none; z-index:20`, so this owns
  * its own position and re-enables pointer events for itself.
  */
-function MiniWindow() {
+function MiniWindow(props) {
   const initial = React.useRef(readMiniPrefs()).current
   // Until the user actually drags it, the window stays anchored to the
   // bottom-right corner. Clamping a persisted offset against a host that is
@@ -943,7 +988,7 @@ function MiniWindow() {
       title: '拖动可移动 · 单击展开',
     }, dragProps),
       h('span', { className: 'hk-mini-ico' }, '🃏'),
-      h('span', { className: 'hk-mini-title' }, '德州扑克'),
+      h('span', { className: 'hk-mini-title' }, tr(props.t, 'tab', '德州扑克')),
       h('span', { className: 'hk-mini-meta' }, pillText),
     )
   }
@@ -955,6 +1000,7 @@ function MiniWindow() {
       state: state,
       busy: snap.busy,
       now: snap.now,
+      t: props.t,
     }, actions))
   } else if (pane === 'timeline') {
     body = h(TimelinePane, { items: (state && state.timeline) || [], players: (state && state.players) || [] })
@@ -978,7 +1024,7 @@ function MiniWindow() {
       onDoubleClick: function () { setCollapsed(true) },
     }, dragProps),
       h('span', { className: 'hk-mini-ico' }, '🃏'),
-      h('span', { className: 'hk-mini-title' }, '德州扑克'),
+      h('span', { className: 'hk-mini-title' }, tr(props.t, 'tab', '德州扑克')),
       h('span', { className: 'hk-mini-meta' }, meta),
       h('button', {
         type: 'button',
@@ -1007,15 +1053,21 @@ function MiniWindow() {
 
 function apply(ctx) {
   ctx.effect(function () {
+    return ctx.locale.register(NS, TEXT)
+  }, 'dsh-holdem: dictionaries')
+  const t = ctx.locale.bind(NS)
+  ctx.effect(function () {
     const style = document.createElement('style')
     style.dataset.plugin = 'dsh-holdem'
     style.textContent = CSS
     document.head.appendChild(style)
     return function () { style.remove() }
   })
+  // `locale` makes the renderer inject the namespace-bound translator into the
+  // component props and re-render on a language switch.
   ctx.slots.inject('conversation.view', function () {
     return ctx.slots.register(
-      { name: 'conversation.view', id: 'holdem', order: 20, label: '德州扑克' },
+      { name: 'conversation.view', id: 'holdem', order: 20, locale: NS, label: function () { return tr(t, 'tab', '德州扑克') } },
       PokerView,
     )
   })
@@ -1023,7 +1075,7 @@ function apply(ctx) {
   // survives tab switches and can be dragged over the conversation.
   ctx.slots.inject('shell.overlay', function () {
     return ctx.slots.register(
-      { name: 'shell.overlay', id: 'holdem-mini', order: 20 },
+      { name: 'shell.overlay', id: 'holdem-mini', order: 20, locale: NS },
       MiniWindow,
     )
   })
@@ -1031,6 +1083,6 @@ function apply(ctx) {
 
 module.exports = {
   name: 'dsh-holdem',
-  inject: ['slots'],
+  inject: ['slots', 'locale'],
   apply: apply,
 }
