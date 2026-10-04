@@ -14,6 +14,14 @@ const REQUEST_BODY_TIMEOUT_MS = 15 * 1000
 const MAX_SESSIONS = 32
 const SESSION_TTL_MS = 30 * 60 * 1000
 const SESSION_COOKIE = 'dsh_holdem_sid'
+// A client that cannot keep our session cookie — an Electron-hosted shell, a
+// cookie-blocked profile — must still reach the SAME table on every poll, or
+// each 280ms poll mints a new session and the table flickers. Such a client
+// sends its own stable id; the cookie stays as the transport for requests that
+// cannot carry a header at all (`<img src>` avatar fetches).
+const SESSION_HEADER = 'x-holdem-sid'
+const SESSION_QUERY = 'sid'
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/
 const MUTATING_METHODS = ['start', 'act', 'next-hand', 'reset', 'set-avatar', 'clear-avatar']
 
 const BOTS = [
@@ -79,6 +87,7 @@ function createPlayer(spec, seat) {
 }
 
 export function createTable(ctx, options) {
+  const clientId = (options && options.clientId) || ''
   const state = {
     status: 'idle',
     handNo: 0,
@@ -277,7 +286,7 @@ export function createTable(ctx, options) {
           lastAction: p.lastAction,
           lastThought: '',
           talk: p.talk || '',
-          avatar: avatarView(p.id, overrides, bundled),
+          avatar: avatarView(p.id, overrides, bundled, clientId),
           hasCards: p.cards.length === 2,
           cards: show ? p.cards.slice() : [],
           handName: show && p.cards.length === 2 && (state.revealed || p.kind === 'human') && state.board.length >= 3
@@ -1127,6 +1136,30 @@ function cookieValue(req) {
   return ''
 }
 
+function urlParam(url, name) {
+  const query = String(url || '').split('?')[1]
+  if (!query) return ''
+  const parts = query.split('&')
+  for (let i = 0; i < parts.length; i++) {
+    const at = parts[i].indexOf('=')
+    const key = at < 0 ? parts[i] : parts[i].slice(0, at)
+    if (key !== name) continue
+    const value = at < 0 ? '' : parts[i].slice(at + 1)
+    try { return decodeURIComponent(value) } catch (err) { return value }
+  }
+  return ''
+}
+
+// The client's own session id: a header on the JSON API, or a query parameter
+// on avatar URLs that cannot carry headers. Anything that does not look like a
+// session id is ignored, so junk never becomes a session key.
+function clientSessionId(req) {
+  const header = requestHeader(req, SESSION_HEADER).trim()
+  if (SESSION_ID_PATTERN.test(header)) return header
+  const query = urlParam(req && req.url, SESSION_QUERY).trim()
+  return SESSION_ID_PATTERN.test(query) ? query : ''
+}
+
 function requestIsSecure(req) {
   const forwarded = requestHeader(req, 'x-forwarded-proto').split(',')[0].trim().toLowerCase()
   if (forwarded === 'https') return true
@@ -1217,6 +1250,22 @@ export function apply(ctx) {
     disposeSession(session)
   }
 
+  // The cap is a memory guard, not a lockout: at capacity we drop the session
+  // that has gone longest without a request. Refusing new sessions instead
+  // would brick the plugin for everyone once any one client floods it, and a
+  // client polling without a usable cookie floods it in seconds.
+  function evictOldestSession() {
+    let oldestId = null
+    let oldestAt = Infinity
+    for (const [id, session] of sessions) {
+      if (session.lastUsed < oldestAt) {
+        oldestAt = session.lastUsed
+        oldestId = id
+      }
+    }
+    if (oldestId !== null) removeSession(oldestId)
+  }
+
   function pruneSessions(now) {
     for (const [id, session] of sessions) {
       if (now - session.lastUsed > SESSION_TTL_MS) removeSession(id)
@@ -1224,7 +1273,7 @@ export function apply(ctx) {
   }
 
   function findSession(req) {
-    const id = cookieValue(req)
+    const id = clientSessionId(req) || cookieValue(req)
     if (!id) return null
     const session = sessions.get(id)
     if (!session) return null
@@ -1240,13 +1289,23 @@ export function apply(ctx) {
   function createSession(req) {
     const now = Date.now()
     pruneSessions(now)
-    if (sessions.size >= MAX_SESSIONS) throw new HttpError(503, 'too many active sessions')
-    let id
-    do { id = randomBytes(32).toString('base64url') } while (sessions.has(id))
+    // Prefer the client's own id so its table survives a browser that never
+    // returns the cookie; fall back to a host-minted id.
+    let id = clientSessionId(req)
+    if (id) {
+      const existing = sessions.get(id)
+      if (existing) {
+        existing.lastUsed = now
+        return existing
+      }
+    } else {
+      do { id = randomBytes(32).toString('base64url') } while (sessions.has(id))
+    }
+    while (sessions.size >= MAX_SESSIONS) evictOldestSession()
     const session = {
       id: id,
       csrfToken: randomBytes(32).toString('base64url'),
-      table: createTable(ctx, { registerEffect: false }),
+      table: createTable(ctx, { registerEffect: false, clientId: id }),
       lastUsed: now,
     }
     sessions.set(id, session)

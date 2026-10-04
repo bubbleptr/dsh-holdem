@@ -112,13 +112,16 @@ export function loadBundled(dir) {
   return out
 }
 
-export function avatarView(id, overrides, bundled) {
+// `clientId` rides along in the query because an `<img src>` fetch cannot carry
+// the session header — the avatar must reach the same table as the JSON API.
+export function avatarView(id, overrides, bundled, clientId) {
+  const suffix = clientId ? '&sid=' + encodeURIComponent(clientId) : ''
   const rec = overrides && overrides[id]
   if (rec) {
     return {
       kind: 'override',
       seed: id,
-      src: '/dsh-holdem/avatar/' + id + '?v=' + rec.rev,
+      src: '/dsh-holdem/avatar/' + id + '?v=' + rec.rev + suffix,
     }
   }
   const pack = bundled && bundled[id]
@@ -126,7 +129,7 @@ export function avatarView(id, overrides, bundled) {
     return {
       kind: 'default',
       seed: id,
-      src: '/dsh-holdem/avatar/' + id + '?v=' + pack.rev,
+      src: '/dsh-holdem/avatar/' + id + '?v=' + pack.rev + suffix,
     }
   }
   return { kind: 'identicon', seed: id, src: '' }

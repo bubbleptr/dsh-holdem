@@ -133,6 +133,8 @@ pnpm check:contrast
 
 牌局 API 为每个浏览器签发随机的 `HttpOnly`、`SameSite=Strict` 会话 Cookie；不同浏览器各自拥有独立牌桌，牌面不会在会话之间共享。首次 GET `/dsh-holdem` 后，客户端使用响应中的 `X-CSRF-Token` 发送后续 POST 请求；POST 还必须使用 `application/json`，请求体上限为 4 MiB。
 
+客户端还会在每次请求上带一个自己生成、存在 `localStorage` 的稳定 id（请求头 `x-holdem-sid`，24 位 hex），宿主用它作为会话键。这是为了应付**不回传 Cookie 的宿主**（例如 Electron 客户端外壳里加载同一个 Web GUI）：只认 Cookie 时每次轮询都会新建一张牌桌并新开一个会话，几十秒内打满 32 个上限，之后 API 会一直 503。头像走 `<img>`，没法带请求头，所以在 URL 上用 `?sid=` 捎同一个 id。会话到上限时按 LRU 淘汰最久未使用的那张牌桌，而不是拒绝新会话。
+
 `dsh-host-webserver` 默认只监听回环地址。不要在没有 TLS 和上游认证代理的情况下把 Web Server 暴露到局域网或公网；本插件的会话令牌用于会话隔离和 CSRF 防护，不替代部署层的用户身份认证。
 
 ## 许可证

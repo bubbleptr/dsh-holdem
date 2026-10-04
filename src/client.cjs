@@ -2,13 +2,46 @@ const React = require('react')
 const h = React.createElement
 
 const API = '/dsh-holdem'
+const SID_KEY = 'dsh-holdem.sid'
 let csrfToken = ''
+let sid = ''
+
+// The host keys the table by this id, so it has to stay stable across polls and
+// reloads. It is what keeps the game playable in a shell that never returns our
+// session cookie: without it every 280ms poll would land on a brand-new table
+// and each poll would also mint a new host session.
+function clientId() {
+  if (sid) return sid
+  sid = readStoredId()
+  if (sid) return sid
+  sid = randomId()
+  try { window.localStorage.setItem(SID_KEY, sid) } catch (err) { /* private mode: id lives for this page load */ }
+  return sid
+}
+
+function readStoredId() {
+  try {
+    const saved = window.localStorage.getItem(SID_KEY)
+    return saved && /^[A-Za-z0-9_-]{16,64}$/.test(saved) ? saved : ''
+  } catch (err) {
+    return ''
+  }
+}
+
+function randomId() {
+  const bytes = new Uint8Array(12)
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) crypto.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  let out = ''
+  for (let i = 0; i < bytes.length; i++) out += ('0' + bytes[i].toString(16)).slice(-2)
+  return out
+}
 
 function rpc(method, args) {
   const isGet = method === 'get-state'
   const headers = isGet
-    ? {}
-    : { 'content-type': 'application/json', 'x-csrf-token': csrfToken }
+    ? { 'x-holdem-sid': clientId() }
+    : { 'content-type': 'application/json', 'x-csrf-token': csrfToken, 'x-holdem-sid': clientId() }
   return fetch(API + '/' + method, {
     method: isGet ? 'GET' : 'POST',
     credentials: 'same-origin',
