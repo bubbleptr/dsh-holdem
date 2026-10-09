@@ -10,6 +10,7 @@
 - 标题接入宿主语言（`dsh-client-locale`）：Tab、牌桌顶部标题、小窗标题随宿主在英文 / 中文间切换——英文 "Texas Hold'em" / "No-Limit Inference"，中文「德州扑克」/「无限注德州扑克」。
 - 桌面版适配：会话 id 改走 `X-Holdem-Session` 请求/响应头，CSRF 仍走 `X-CSRF-Token`。桌面壳（Electron 主进程）把 `dsh-app://` 请求转发给回环 Host 时会丢弃客户端 Cookie、并扣掉响应里的 `Set-Cookie`，只有自定义请求头能跨过去；web 端保留会话 Cookie 兜底，旧客户端不受影响。
 - 头像 URL 带每会话的媒体令牌（`?t=`），`<img>` 在没有 Cookie 的桌面渲染进程里也能加载。
+- 允许部署显式追加可信来源（`DSH_HOLDEM_EXTRA_ORIGINS`，逗号分隔）：手机经公网反代访问时，浏览器带的 `Origin` 是那个公网域名，而宿主算出的同源是它自己的回环地址，否则每一次操作都会被判成跨站。默认**空**，不设置就完全是原来的行为。
 
 ### 修复
 - 桌面版下每次轮询都会新建牌桌、POST 恒 401 的问题。
@@ -17,6 +18,7 @@
 
 ### 安全
 - 媒体令牌只授权读取头像（含用户上传的覆盖头像），不能驱动任何动作；POST 仍必须带 `X-CSRF-Token`。见 `test/desktop-transport.test.mjs`。
+- `DSH_HOLDEM_EXTRA_ORIGINS` 只放宽「来源」这一道判断；`X-CSRF-Token` 与 `sec-fetch-site` 两道检查不变，所以它不是「对外开一个无鉴权接口」。
 
 ## [0.4.0] - 2026-09-21
 

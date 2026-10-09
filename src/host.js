@@ -1215,6 +1215,20 @@ function httpOrigin(value) {
   }
 }
 
+// 部署可显式追加允许的来源（逗号分隔，允许带结尾斜杠）。手机经公网反代进来时，
+// 浏览器带的 Origin 是那个公网域名，而宿主算出的 expected 是它自己的回环地址，
+// 于是每一次操作都会被判成跨站。默认**空**：不设这个变量就是原来的行为。
+// 只放宽来源判定；CSRF 头与下面的 sec-fetch-site 两道仍然照旧。
+const EXTRA_ORIGINS = (process.env.DSH_HOLDEM_EXTRA_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim().replace(/\/+$/, ''))
+  .filter(Boolean)
+
+function originAllowed(actual, expected) {
+  if (!actual) return false
+  if (expected && actual === expected) return true
+  return EXTRA_ORIGINS.includes(actual)
+}
 function validateOrigin(req) {
   const expected = requestOrigin(req)
   const origin = requestHeader(req, 'origin').trim()
@@ -1223,10 +1237,10 @@ function validateOrigin(req) {
     try {
       if (origin !== 'null') actual = new URL(origin).origin
     } catch (err) {}
-    if (!expected || actual !== expected) throw new HttpError(403, 'cross-origin request rejected')
+    if (!originAllowed(actual, expected)) throw new HttpError(403, 'cross-origin request rejected')
   } else {
     const actual = httpOrigin(requestHeader(req, 'referer').trim())
-    if (actual && (!expected || actual !== expected)) throw new HttpError(403, 'cross-origin request rejected')
+    if (actual && !originAllowed(actual, expected)) throw new HttpError(403, 'cross-origin request rejected')
   }
   if (requestHeader(req, 'sec-fetch-site').trim().toLowerCase() === 'cross-site') {
     throw new HttpError(403, 'cross-origin request rejected')
