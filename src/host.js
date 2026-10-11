@@ -1215,6 +1215,19 @@ function httpOrigin(value) {
   }
 }
 
+// A reverse proxy may expose a public origin while the Host sees loopback.
+// Opt-in HTTP(S) origins use the same normalization as request origins;
+// invalid entries are ignored. CSRF and Fetch Metadata checks still apply.
+const EXTRA_ORIGINS = (process.env.DSH_HOLDEM_EXTRA_ORIGINS || '')
+  .split(',')
+  .map((s) => httpOrigin(s.trim()))
+  .filter(Boolean)
+
+function originAllowed(actual, expected) {
+  if (!actual) return false
+  if (expected && actual === expected) return true
+  return EXTRA_ORIGINS.includes(actual)
+}
 function validateOrigin(req) {
   const expected = requestOrigin(req)
   const origin = requestHeader(req, 'origin').trim()
@@ -1223,10 +1236,10 @@ function validateOrigin(req) {
     try {
       if (origin !== 'null') actual = new URL(origin).origin
     } catch (err) {}
-    if (!expected || actual !== expected) throw new HttpError(403, 'cross-origin request rejected')
+    if (!originAllowed(actual, expected)) throw new HttpError(403, 'cross-origin request rejected')
   } else {
     const actual = httpOrigin(requestHeader(req, 'referer').trim())
-    if (actual && (!expected || actual !== expected)) throw new HttpError(403, 'cross-origin request rejected')
+    if (actual && !originAllowed(actual, expected)) throw new HttpError(403, 'cross-origin request rejected')
   }
   if (requestHeader(req, 'sec-fetch-site').trim().toLowerCase() === 'cross-site') {
     throw new HttpError(403, 'cross-origin request rejected')
