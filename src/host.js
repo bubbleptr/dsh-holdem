@@ -14,14 +14,13 @@ const REQUEST_BODY_TIMEOUT_MS = 15 * 1000
 const MAX_SESSIONS = 32
 const SESSION_TTL_MS = 30 * 60 * 1000
 const SESSION_COOKIE = 'dsh_holdem_sid'
-// A client that cannot keep our session cookie — an Electron-hosted shell, a
-// cookie-blocked profile — must still reach the SAME table on every poll, or
-// each 280ms poll mints a new session and the table flickers. Such a client
-// sends its own stable id; the cookie stays as the transport for requests that
-// cannot carry a header at all (`<img src>` avatar fetches).
-const SESSION_HEADER = 'x-holdem-sid'
-const SESSION_QUERY = 'sid'
-const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/
+// The desktop shell strips request cookies and withholds Set-Cookie while it
+// proxies dsh-app:// traffic to the loopback Host, so the session id travels
+// as a plain header in both directions. The cookie stays for the web surface.
+const SESSION_HEADER = 'x-holdem-session'
+// Query parameter carrying a session's media token for <img> avatar requests,
+// which cannot attach the session header.
+const MEDIA_PARAM = 't'
 const MUTATING_METHODS = ['start', 'act', 'next-hand', 'reset', 'set-avatar', 'clear-avatar']
 
 const BOTS = [
@@ -87,7 +86,7 @@ function createPlayer(spec, seat) {
 }
 
 export function createTable(ctx, options) {
-  const clientId = (options && options.clientId) || ''
+  const mediaToken = (options && options.mediaToken) || ''
   const state = {
     status: 'idle',
     handNo: 0,
@@ -286,7 +285,7 @@ export function createTable(ctx, options) {
           lastAction: p.lastAction,
           lastThought: '',
           talk: p.talk || '',
-          avatar: avatarView(p.id, overrides, bundled, clientId),
+          avatar: avatarView(p.id, overrides, bundled, mediaToken),
           hasCards: p.cards.length === 2,
           cards: show ? p.cards.slice() : [],
           handName: show && p.cards.length === 2 && (state.revealed || p.kind === 'human') && state.board.length >= 3
@@ -1125,6 +1124,18 @@ function methodFromUrl(url) {
   return rest || 'get-state'
 }
 
+function queryParam(url, name) {
+  const at = String(url || '').indexOf('?')
+  if (at < 0) return ''
+  const parts = String(url).slice(at + 1).split('&')
+  for (let i = 0; i < parts.length; i++) {
+    const eq = parts[i].indexOf('=')
+    if (eq < 0 || parts[i].slice(0, eq) !== name) continue
+    try { return decodeURIComponent(parts[i].slice(eq + 1)) } catch (err) { return '' }
+  }
+  return ''
+}
+
 function cookieValue(req) {
   const raw = requestHeader(req, 'cookie')
   const parts = raw ? raw.split(';') : []
@@ -1136,28 +1147,12 @@ function cookieValue(req) {
   return ''
 }
 
-function urlParam(url, name) {
-  const query = String(url || '').split('?')[1]
-  if (!query) return ''
-  const parts = query.split('&')
-  for (let i = 0; i < parts.length; i++) {
-    const at = parts[i].indexOf('=')
-    const key = at < 0 ? parts[i] : parts[i].slice(0, at)
-    if (key !== name) continue
-    const value = at < 0 ? '' : parts[i].slice(at + 1)
-    try { return decodeURIComponent(value) } catch (err) { return value }
-  }
-  return ''
-}
-
-// The client's own session id: a header on the JSON API, or a query parameter
-// on avatar URLs that cannot carry headers. Anything that does not look like a
-// session id is ignored, so junk never becomes a session key.
-function clientSessionId(req) {
+// The session id arrives in a header (desktop shell, and the web client going
+// forward) or, for older web clients, in the session cookie. The header wins.
+function sessionToken(req) {
   const header = requestHeader(req, SESSION_HEADER).trim()
-  if (SESSION_ID_PATTERN.test(header)) return header
-  const query = urlParam(req && req.url, SESSION_QUERY).trim()
-  return SESSION_ID_PATTERN.test(query) ? query : ''
+  if (header) return header
+  return cookieValue(req)
 }
 
 function requestIsSecure(req) {
@@ -1204,6 +1199,22 @@ function validateCsrf(req, session) {
   if (!sameSecret(token, session && session.csrfToken)) throw new HttpError(403, 'csrf validation failed')
 }
 
+// Only an http(s) referrer says anything about the requesting page's origin.
+// The desktop shell proxies dsh-app:// traffic with a referrer whose origin
+// Node parses as "null", so treating non-http(s) referrers as uninformative
+// keeps that surface working; the required CSRF header remains the control
+// that a cross-origin page cannot satisfy.
+function httpOrigin(value) {
+  if (!value) return ''
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+    return url.origin
+  } catch (err) {
+    return ''
+  }
+}
+
 function validateOrigin(req) {
   const expected = requestOrigin(req)
   const origin = requestHeader(req, 'origin').trim()
@@ -1214,12 +1225,8 @@ function validateOrigin(req) {
     } catch (err) {}
     if (!expected || actual !== expected) throw new HttpError(403, 'cross-origin request rejected')
   } else {
-    const referer = requestHeader(req, 'referer').trim()
-    if (referer) {
-      let actual = ''
-      try { actual = new URL(referer).origin } catch (err) {}
-      if (!expected || actual !== expected) throw new HttpError(403, 'cross-origin request rejected')
-    }
+    const actual = httpOrigin(requestHeader(req, 'referer').trim())
+    if (actual && (!expected || actual !== expected)) throw new HttpError(403, 'cross-origin request rejected')
   }
   if (requestHeader(req, 'sec-fetch-site').trim().toLowerCase() === 'cross-site') {
     throw new HttpError(403, 'cross-origin request rejected')
@@ -1250,22 +1257,6 @@ export function apply(ctx) {
     disposeSession(session)
   }
 
-  // The cap is a memory guard, not a lockout: at capacity we drop the session
-  // that has gone longest without a request. Refusing new sessions instead
-  // would brick the plugin for everyone once any one client floods it, and a
-  // client polling without a usable cookie floods it in seconds.
-  function evictOldestSession() {
-    let oldestId = null
-    let oldestAt = Infinity
-    for (const [id, session] of sessions) {
-      if (session.lastUsed < oldestAt) {
-        oldestAt = session.lastUsed
-        oldestId = id
-      }
-    }
-    if (oldestId !== null) removeSession(oldestId)
-  }
-
   function pruneSessions(now) {
     for (const [id, session] of sessions) {
       if (now - session.lastUsed > SESSION_TTL_MS) removeSession(id)
@@ -1273,7 +1264,7 @@ export function apply(ctx) {
   }
 
   function findSession(req) {
-    const id = clientSessionId(req) || cookieValue(req)
+    const id = sessionToken(req)
     if (!id) return null
     const session = sessions.get(id)
     if (!session) return null
@@ -1286,26 +1277,36 @@ export function apply(ctx) {
     return session
   }
 
+  // Avatar bitmaps cannot carry headers, so their URL carries a per-session
+  // media token instead. It is separate from the session id and never accepted
+  // for state mutations, so leaking an avatar URL cannot drive the table.
+  function findSessionByMediaToken(token) {
+    if (!token) return null
+    for (const session of sessions.values()) {
+      if (!sameSecret(token, session.mediaToken)) continue
+      const now = Date.now()
+      if (now - session.lastUsed > SESSION_TTL_MS) {
+        removeSession(session.id)
+        return null
+      }
+      session.lastUsed = now
+      return session
+    }
+    return null
+  }
+
   function createSession(req) {
     const now = Date.now()
     pruneSessions(now)
-    // Prefer the client's own id so its table survives a browser that never
-    // returns the cookie; fall back to a host-minted id.
-    let id = clientSessionId(req)
-    if (id) {
-      const existing = sessions.get(id)
-      if (existing) {
-        existing.lastUsed = now
-        return existing
-      }
-    } else {
-      do { id = randomBytes(32).toString('base64url') } while (sessions.has(id))
-    }
-    while (sessions.size >= MAX_SESSIONS) evictOldestSession()
+    if (sessions.size >= MAX_SESSIONS) throw new HttpError(503, 'too many active sessions')
+    let id
+    do { id = randomBytes(32).toString('base64url') } while (sessions.has(id))
+    const mediaToken = randomBytes(24).toString('base64url')
     const session = {
       id: id,
       csrfToken: randomBytes(32).toString('base64url'),
-      table: createTable(ctx, { registerEffect: false, clientId: id }),
+      mediaToken: mediaToken,
+      table: createTable(ctx, { registerEffect: false, mediaToken: mediaToken }),
       lastUsed: now,
     }
     sessions.set(id, session)
@@ -1319,7 +1320,10 @@ export function apply(ctx) {
   }
 
   function addSessionHeaders(headers, session, setCookie) {
-    if (session) headers['x-csrf-token'] = session.csrfToken
+    if (session) {
+      headers['x-csrf-token'] = session.csrfToken
+      headers[SESSION_HEADER] = session.id
+    }
     if (setCookie) headers['set-cookie'] = [setCookie]
     return headers
   }
@@ -1350,9 +1354,14 @@ export function apply(ctx) {
         try {
           if (req.method === 'GET' && method.indexOf('avatar/') === 0) {
             discardRequest(req)
-            session = requireSession(req)
+            validateOrigin(req)
+            // The <img> loading this URL cannot attach the session header, so
+            // the media token in the query stands in for it (or the web cookie).
+            // Keep `session` unset: image responses carry no session headers.
+            const owner = findSession(req) || findSessionByMediaToken(queryParam(req.url, MEDIA_PARAM))
+            if (!owner) throw new HttpError(401, 'session required')
             const id = decodeURIComponent(method.slice('avatar/'.length).split('/')[0])
-            const file = session.table.avatarFile(id)
+            const file = owner.table.avatarFile(id)
             if (!file) {
               json(404, { error: 'no override' })
               return
