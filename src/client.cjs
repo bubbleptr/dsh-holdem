@@ -77,6 +77,7 @@ function createStore() {
   const listeners = new Map()
   let timer = null
   let interval = null
+  let polling = false
 
   function emit(patch) {
     snap = Object.assign({}, snap, patch)
@@ -94,10 +95,16 @@ function createStore() {
   }
 
   function load() {
+    // An overlapping bootstrap poll has no session token yet and creates a
+    // second table whose late response can replace the one the player started.
+    if (polling) return
+    polling = true
     rpc('get-state').then(function (next) {
       emit({ state: next, now: Date.now(), err: '' })
     }).catch(function (e) {
       emit({ err: String((e && e.message) || e) })
+    }).finally(function () {
+      polling = false
     })
   }
 
