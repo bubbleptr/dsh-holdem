@@ -1215,13 +1215,12 @@ function httpOrigin(value) {
   }
 }
 
-// 部署可显式追加允许的来源（逗号分隔，允许带结尾斜杠）。手机经公网反代进来时，
-// 浏览器带的 Origin 是那个公网域名，而宿主算出的 expected 是它自己的回环地址，
-// 于是每一次操作都会被判成跨站。默认**空**：不设这个变量就是原来的行为。
-// 只放宽来源判定；CSRF 头与下面的 sec-fetch-site 两道仍然照旧。
+// A reverse proxy may expose a public origin while the Host sees loopback.
+// Opt-in HTTP(S) origins use the same normalization as request origins;
+// invalid entries are ignored. CSRF and Fetch Metadata checks still apply.
 const EXTRA_ORIGINS = (process.env.DSH_HOLDEM_EXTRA_ORIGINS || '')
   .split(',')
-  .map((s) => s.trim().replace(/\/+$/, ''))
+  .map((s) => httpOrigin(s.trim()))
   .filter(Boolean)
 
 function originAllowed(actual, expected) {
